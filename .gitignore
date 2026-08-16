@@ -1,0 +1,15 @@
+# Ignore all archived files/folders used for team communication:
+*.zip
+*.7z
+*.rar
+*.tar*
+*.tgz
+*.dmg
+*.app
+
+# Ignore temporary files/folders used for testing:
+temp*
+*TODO*
+
+# Ignore already compiled code:
+*.exe
