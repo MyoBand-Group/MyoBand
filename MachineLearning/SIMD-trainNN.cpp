@@ -1,16 +1,28 @@
-/*   Author: Nikola D. Lilov, 18 Aug 2026
+/*  Author: Nikola D. Lilov, 18 Aug 2026
  *
- *  Desc: ...
+ *  Desc: Trains a simple NxM neural network with decreasing LR, a SIMD-
+ *  friendly activation function x/1+abs(x) and a squared loss function.
+ *  Instead of propagating one training example at a time, the CPU is
+ *  fed through `vec_width` examples at once: one example per SIMD lane.
+ *  Requires a training dataset file with alternating input and output
+ *  lines. Saves (and can load) the trained net to a file to later
+ *  retrain or inference on.
  *
- *  Common Usage: makeNN.exe -d dataset.txt
- *  For expanded usage: makeNN.exe -h
+ *  Compilation eg.:    g++ SIMD-trainNN.cpp -o SIMD -O2 -march=native
+ *                      clang++ SIMD-trainNN.cpp -o SIMD -O2 -march=native
+ *
+ *  Common Usage:       SIMD.exe -d dataset.txt
+ *  Expanded Usage:     SIMD.exe -h
  */
+
 /* The data should be in the format:
+
     feature1 feature2 feature3 ... featureX
-    output1 output2 output3 ... outputY
+    output1 output2 ... outputY
     feature1 feature2 feature3 ... featureX
-    output1 output2 output3 ... outputY
+    output1 output2 ... outputY
     ...
+
 */
 
 #include <fstream>
@@ -23,7 +35,6 @@
 #include <cstdlib>
 // #include <simd>
 #include <experimental/simd>
-#include <numeric>
 #include <algorithm>
 #include <string>
 #include <vector>
@@ -35,31 +46,33 @@ constexpr std::size_t vec_width = simd_t::size();
 
 void help(const std::string &exe)
 {
-    std::cerr << "Common Usages:\n"
-              << "  " << exe << " -d dataset.txt\n"
-              << "  " << exe << " -l trained_net.txt -i inputs.txt \n"
+    std::cerr << " Common Usages:\n"
+              << "   " << exe << " -d dataset.txt\n"
+              << "   " << exe << " -l trained_net.txt -i inputs.txt \n"
               << "\n"
-              << "All Options: (order isn't important)\n"
-              << "  -d --data <path>     Training data file containing space-separated input and output lines.\n"
-              << "  -l --load <path>     Load a trained model from file to inference* with.\n"
-              << "  -s --save <path>     Save the trained model to file. Defaults to trained_net.txt.\n"
-              << "  -t --testing <float> Set what proportion of the dataset (-d) should be for testing. Defaults to 0.20.\n"
-              << "  -b --batch_size <int>         Set how big the training batches** should be (0 <=> BGD). Defaults to 1.\n"
-              << "  -lr --learning_rate <float>   Set the initial learning rate for training. Defaults to 0.5/N.\n"
-              << "  -i --inputs <path>   Load inference input from file.\n"
-              << "  -o --output <path>   Save inference output to file. Defaults to output.txt.\n"
-              << "  -h --help            Show this usage information.\n"
+              << " All Options: (order isn't important)\n"
+              << "   -d --data <path>     Training data file containing space-separated input and output lines.\n"
+              << "   -l --load <path>     Load a trained model from file to inference* with.\n"
+              << "   -s --save <path>     Save the trained model to file. Defaults to trained_net.txt.\n"
+              << "   -t --testing <float> Set what proportion of the dataset (-d) should be for testing. Defaults to 0.20.\n"
+              << "   -b --batch_size <int>         Set how big the training batches** should be (0 <=> BGD). Defaults to 4.\n"
+              << "   -lr --learning_rate <float>   Set the initial learning rate for training. Defaults to 0.5/N.\n"
+              << "   -p --print <int>     How often to print status updates. Defaults to 500 (once every 500 epochs).\n"
+              << "   -i --inputs <path>   Load inference input from file.\n"
+              << "   -o --output <path>   Save inference output to file. Defaults to output.txt.\n"
+              << "   -h --help            Show this usage information.\n"
               << "\n"
-              << " *Note: If both --load and --data are specified, the model will be loaded and then further trained on the data as needed.\n"
-              << "**Note: This code utilizes the CPU's capability to train on multiple examples at a time. Your inputted batch_size will then be multiplied by the number of samples your CPU can parallelize.\n"
+              << "  *Note: If both --load and --data are specified, the model will be loaded and then further trained on the data as needed.\n"
+              << " **Note: This code utilizes the CPU's capability to train on multiple examples at a time (SIMD). Your inputted batch_size will then be multiplied by the number of samples your CPU can parallelize.\n"
               << "\n"
-              << "Example --data file format:\n"
-              << "  <input1> <input2> ... <inputX>\n  <output1> <output2> ... <outputY>\n  <input1> <input2> ... <inputX>\n  <output1> <output2> ... <outputY>\n  ...\n";
+              << " Example --data file format:\n"
+              << "   <input1> <input2> <input3> ... <inputX>\n   <output1> <output2> ... <outputY>\n   <input1> <input2> <input3> ... <inputX>\n   <output1> <output2> ... <outputY>\n   ..."
+              << "\n\n\n";
     exit(0);
 }
 
 void initialize(int &argc, char **argv, std::ifstream &data_file, std::ifstream &load_file, std::ifstream &input_file,
-                std::ofstream &output_file, int &whereToSave, int &batch_size, float &part_testing, float &LR)
+                std::ofstream &output_file, int &whereToSave, int &batch_size, float &part_testing, float &LR, int &print)
 {
 
     if (argc == 1)
@@ -153,7 +166,7 @@ void initialize(int &argc, char **argv, std::ifstream &data_file, std::ifstream 
                     std::cerr << "Missing value for --batches\n";
                     exit(-1);
                 }
-                batch_size = std::stod(argv[i]);
+                batch_size = std::stoi(argv[i]);
             }
             else if (arg == "--testing" || arg == "-t")
             {
@@ -163,6 +176,15 @@ void initialize(int &argc, char **argv, std::ifstream &data_file, std::ifstream 
                     exit(-1);
                 }
                 part_testing = std::stof(argv[i]);
+            }
+            else if (arg == "--print" || arg == "-p")
+            {
+                if (++i >= argc)
+                {
+                    std::cerr << "Missing value for --print\n";
+                    exit(-1);
+                }
+                print = std::stoi(argv[i]);
             }
             else if (arg == "--help" || arg == "-h")
             {
@@ -180,12 +202,12 @@ struct layer
 {
     std::vector<simd_t> value, delta;
 
-    std::vector<std::vector<float>> weight, grad_w;
-    std::vector<float> bias, grad_b;
+    std::vector<std::vector<simd_t>> weight, grad_w;
+    std::vector<simd_t> bias, grad_b;
 
     layer() = default;
 
-    layer(const int &M)
+    layer(const int &M) // Used only as an expected output to compare against => no logic stored inside
     {
         value.resize(M);
         weight.resize(0);
@@ -210,11 +232,11 @@ struct layer
             grad_w[i].resize(output_size);
             for (int j = 0; j < output_size; j++)
             {
-                weight[i][j] = distribution(gen);
-                grad_w[i][j] = 0.0f;
+                weight[i][j] = simd_t(distribution(gen));
+                grad_w[i][j] = simd_t(0.0f);
             }
-            bias[i] = distribution(gen);
-            grad_b[i] = 0.0f;
+            bias[i] = simd_t(distribution(gen));
+            grad_b[i] = simd_t(0.0f);
             // value[i]=simd_t(0.0f);
             // delta[i]=simd_t(0.0f);
         }
@@ -227,7 +249,166 @@ struct layer
 };
 using NN = std::vector<layer>;
 
-void buildNN(NN &net, const int &N, const int &M, const int &input_size, const int &output_size, std::uniform_real_distribution<float> &distribution, std::mt19937 &gen)
+using dataset = std::vector<std::pair<std::vector<float>, std::vector<float>>>; // A dataset is a vector of pairs of training input and output layers
+
+simd_t d_loss(const simd_t &expected, const simd_t &output)
+{
+    return 2 * (output - expected); // Derivative of the loss function with respect to the output
+}
+simd_t activation(const simd_t &x)
+{
+    return x / (simd_t(1.0f) + simd::abs(x)); // Sigmoid activation function (from -1 to 1)
+}
+simd_t d_activation(const simd_t &y)
+{
+    simd_t t = simd_t(1.0f) - simd::abs(y);
+    return t * t;
+}
+
+void forward_propagation(NN &net, const int &N)
+{
+    for (int i = 1; i <= N + 1; i++)
+        for (int j = 0; j < net[i].size(); j++)
+        {
+            net[i].value[j] = net[i].bias[j];
+            for (int k = 0; k < net[i - 1].size(); k++)
+                net[i].value[j] += net[i - 1].weight[k][j] * net[i - 1].value[k];
+            net[i].value[j] = activation(net[i].value[j]);
+        }
+}
+
+void backward_propagation(NN &net, const int &N, layer &expected_output)
+{
+    // Calculate the delta for the output layer
+    for (int j = 0; j < net[N + 1].size(); j++)
+    {
+        net[N + 1].delta[j] = d_loss(expected_output.value[j], net[N + 1].value[j]) * d_activation(net[N + 1].value[j]);
+        net[N + 1].grad_b[j] += net[N + 1].delta[j];
+    }
+
+    // Backward pass
+    simd_t d_act;
+    for (int i = N; i >= 0; i--)
+        for (int j = 0; j < net[i].size(); j++)
+        {
+            net[i].delta[j] = simd_t(0.0f);
+            d_act = d_activation(net[i].value[j]);
+            for (int k = 0; k < net[i + 1].size(); k++)
+            {
+                net[i].delta[j] += net[i + 1].delta[k] * d_act * net[i].weight[j][k];
+                net[i].grad_w[j][k] += net[i + 1].delta[k] * net[i].value[j];
+            }
+            net[i].grad_b[j] += net[i].delta[j];
+        }
+}
+
+void update(NN &net, const int &N, const float &LR, const int &batch_size)
+{
+    const float LR_ = LR / batch_size;
+    for (int i = 0; i <= N + 1; i++)
+        for (int j = 0; j < net[i].size(); j++)
+        {
+            net[i].bias[j] -= simd_t(LR_ * simd::reduce(net[i].grad_b[j]));
+            net[i].grad_b[j] = simd_t(0.0f);
+            for (int k = 0; k < net[i].weight[j].size(); k++)
+            {
+                net[i].weight[j][k] -= simd_t(LR_ * simd::reduce(net[i].grad_w[j][k]));
+                net[i].grad_w[j][k] = simd_t(0.0f);
+            }
+        }
+}
+
+float get_loss(NN &net, const int &N, dataset &data)
+{
+    layer expected_output(net.back().size());
+    int cnt;
+    float total_loss = 0.0f;
+
+    for (cnt = 0; cnt < data.size(); cnt += vec_width)
+    {
+        for (int lane = 0; lane < vec_width; lane++)
+            for (int j = 0; j < std::max(data[cnt + lane].first.size(), data[cnt + lane].second.size()); j++)
+            {
+                if (j < data[cnt + lane].first.size())
+                    net[0].value[j][lane] = data[cnt + lane].first[j];
+                if (j < data[cnt + lane].second.size())
+                    expected_output.value[j][lane] = data[cnt + lane].second[j];
+            }
+        forward_propagation(net, N);
+        for (int j = 0; j < net[N + 1].size(); j++)
+        {
+            expected_output.value[j] -= net[N + 1].value[j];
+            total_loss += simd::reduce(expected_output.value[j] * expected_output.value[j]);
+        }
+    }
+
+    return (cnt == 0) ? 0 : total_loss / cnt;
+}
+
+void train(NN &net, const int &N, const int &M, const int &input_size, const int &output_size, dataset &training, float &LR, std::mt19937 &gen, const int &batch_size = 16, const int &print = 500)
+{
+    float last_loss = get_loss(net, N, training), curr_loss;
+    auto start = std::chrono::high_resolution_clock::now(), last_time = std::chrono::high_resolution_clock::now(), curr_time = std::chrono::high_resolution_clock::now();
+    std::cout << "Training neural network on " << training.size() << " data points. Initial loss: " << last_loss << "\n\n";
+    layer expected_output(net.back().size());
+    int epochs;
+
+    while (true)
+    {
+        std::cout << "How many epochs to train the NN for (0 to stop): ";
+        std::cin >> epochs;
+        if (epochs <= 0)
+            break;
+
+        start = std::chrono::high_resolution_clock::now();
+        last_time = std::chrono::high_resolution_clock::now();
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(curr_time - last_time);
+
+        while (epochs--)
+        {
+            if (epochs != 0)
+            {
+                if (epochs % 10 == 0)
+                {
+                    curr_loss = get_loss(net, N, training);
+                    if (curr_loss > 1.025f * last_loss)
+                        LR *= 0.975f; // If the loss increased, the training is unstable. Reduce the learning rate.
+                    last_loss = curr_loss;
+                }
+                if (epochs % print == 0)
+                {
+                    curr_time = std::chrono::high_resolution_clock::now();
+                    ms = std::chrono::duration_cast<std::chrono::milliseconds>(curr_time - last_time);
+                    std::cout << "   Time Left: " << epochs / print * ms.count() / 1000 << "s;   \tEpochs: " << epochs << ";\t\tLR: " << LR << ";   \tLoss: " << last_loss << "\n";
+                    last_time = curr_time;
+                }
+            }
+
+            std::shuffle(training.begin(), training.end(), gen); // Shuffle the order of the training data for this epoch
+            for (int i = 0; i < training.size(); i += vec_width)
+            {
+                for (int lane = 0; lane < vec_width; lane++)
+                    for (int j = 0; j < std::max(training[i + lane].first.size(), training[i + lane].second.size()); j++)
+                    {
+                        if (j < training[i + lane].first.size())
+                            net[0].value[j][lane] = training[i + lane].first[j];
+                        if (j < training[i + lane].second.size())
+                            expected_output.value[j][lane] = training[i + lane].second[j];
+                    }
+                forward_propagation(net, N);
+                backward_propagation(net, N, expected_output);
+                if ((i + vec_width) % batch_size == 0) // Update the weight and biases after each batch
+                    update(net, N, LR, batch_size);
+            }
+        }
+
+        last_loss = get_loss(net, N, training);
+        ms = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::high_resolution_clock::now() - start);
+        std::cout << "Training complete. Elapsed time: " << ms.count() / 1000 << "s; Loss: " << last_loss << "\n\n";
+    }
+}
+
+void build_NN(NN &net, const int &N, const int &M, const int &input_size, const int &output_size, std::uniform_real_distribution<float> &distribution, std::mt19937 &gen)
 {
     if (N <= 0)
     {
@@ -271,15 +452,19 @@ void read(const std::string &line, std::vector<float> &v)
     for (int i = 0; in >> curr && i < v.size(); i++)
         v[i] = curr;
 }
-void read(const std::string &line, layer &l)
+void read(const std::string (&line)[vec_width], layer &l)
 {
-    std::istringstream in(line);
     float curr;
-    for (int i = 0; in >> curr && i < l.size(); i++)
-        l.value[i] = simd_t(curr);
+    std::istringstream in;
+    for (int lane = 0; lane < vec_width; lane++)
+    {
+        in.clear();
+        in.str(line[lane]);
+        for (int i = 0; in >> curr && i < l.size(); i++)
+            l.value[i][lane] = curr;
+    }
 }
 
-using dataset = std::vector<std::pair<std::vector<float>, std::vector<float>>>; // A dataset is a vector of pairs of training input and output layers
 void get_data(std::ifstream &data_file, dataset &data, const int &input_size, const int &output_size)
 {
     std::vector<float> in(input_size), out(output_size);
@@ -301,175 +486,41 @@ void split_data(const dataset &data, dataset &training, dataset &testing, const 
         testing_size++; // Make sure the training data can be split into batches evenly
     for (int i = 0; i < testing_size; i++)
         testing.push_back(data[i]);
+    while (testing.size() % vec_width != 0)
+        testing.push_back(testing[0]);
     for (int i = testing_size; i < data.size(); i++)
         training.push_back(data[i]);
     std::cout << "\nSplitting data...\n"
-              << " Testing set: " << testing_size << " / " << data.size() << " (" << 100.0f * testing.size() / data.size() << "%)\n"
-              << " Training set: " << training.size() / batch_size << 'x' << batch_size << " / " << data.size() << " (" << 100.0f * training.size() / data.size() << "%)\n\n\n";
-}
-
-simd_t d_loss(const simd_t &expected, const simd_t &output)
-{
-    return 2 * (output - expected); // Derivative of the loss function with respect to the output
-}
-simd_t activation(const simd_t &x)
-{
-    return x / (simd_t(1.0f) + simd::abs(x)); // Sigmoid activation function (from -1 to 1)
-}
-simd_t d_activation(const simd_t &x)
-{
-    simd_t t = simd_t(1.0f) - simd::abs(x);
-    return t * t;
-}
-
-void forward_propagation(NN &net, const int &N)
-{
-    for (int i = 1; i <= N + 1; i++)
-        for (int j = 0; j < net[i].size(); j++)
-        {
-            net[i].value[j] = simd_t(net[i].bias[j]);
-            for (int k = 0; k < net[i - 1].size(); k++)
-                net[i].value[j] += simd_t(net[i - 1].weight[k][j]) * net[i - 1].value[k];
-            net[i].value[j] = activation(net[i].value[j]);
-        }
-}
-
-void backward_propagation(NN &net, const int &N, layer &expected_output)
-{
-    // Calculate the delta for the output layer
-    for (int j = 0; j < net[N + 1].size(); j++)
-    {
-        net[N + 1].delta[j] = d_loss(expected_output.value[j], net[N + 1].value[j]) * d_activation(net[N + 1].value[j]);
-        net[N + 1].grad_b[j] += simd::reduce(net[N + 1].delta[j]);
-    }
-
-    // Backward pass
-    simd_t d_act;
-    for (int i = N; i >= 0; i--)
-        for (int j = 0; j < net[i].size(); j++)
-        {
-            net[i].delta[j] = simd_t(0.0f);
-            d_act = d_activation(net[i].value[j]);
-            for (int k = 0; k < net[i + 1].size(); k++)
-            {
-                net[i].delta[j] += net[i + 1].delta[k] * d_act * simd_t(net[i].weight[j][k]);
-                net[i].grad_w[j][k] += simd::reduce(net[i + 1].delta[k] * net[i].value[j]);
-            }
-            net[i].grad_b[j] += simd::reduce(net[i].delta[j]);
-        }
-}
-
-void update(NN &net, const int &N, const float &LR, const int &batch_size)
-{
-    const float LR_ = LR / batch_size;
-    for (int i = 0; i <= N + 1; i++)
-        for (int j = 0; j < net[i].size(); j++)
-        {
-            net[i].bias[j] -= LR_ * net[i].grad_b[j];
-            net[i].grad_b[j] = 0.0f;
-            for (int k = 0; k < net[i].weight[j].size(); k++)
-            {
-                net[i].weight[j][k] -= LR_ * net[i].grad_w[j][k];
-                net[i].grad_w[j][k] = 0.0f;
-            }
-        }
-}
-
-float get_loss(NN &net, const int &N, dataset &data)
-{
-    layer expected_output(net.back().size());
-    int cnt = 0;
-    float total_loss = 0.0f, diff;
-
-    for (const auto &data_point : data)
-    {
-        cnt++;
-        for (int j = 0; j < data_point.first.size(); j++)
-            net[0].value[j] = simd_t(data_point.first[j]);
-        for (int j = 0; j < data_point.second.size(); j++)
-            expected_output.value[j] = simd_t(data_point.second[j]);
-        forward_propagation(net, N);
-        for (int j = 0; j < net[N + 1].size(); j++)
-        {
-            diff = (net[N + 1].value[j][0] - expected_output.value[j][0]);
-            total_loss += diff * diff;
-        }
-    }
-
-    return (cnt == 0) ? 0 : total_loss / cnt;
-}
-
-void train(NN &net, const int &N, const int &M, const int &input_size, const int &output_size, dataset &training, float &LR, std::mt19937 &gen, const int &batch_size = 8)
-{
-    float last_loss = get_loss(net, N, training), curr_loss;
-    auto last_time = std::chrono::high_resolution_clock::now(), curr_time = std::chrono::high_resolution_clock::now();
-    std::cout << "Training neural network on " << training.size() << " data points. Initial loss: " << last_loss << "\n\n";
-    layer expected_output(net.back().size());
-    int epochs;
-
-    while (true)
-    {
-        std::cout << "How many epochs to train the NN for: ";
-        std::cin >> epochs;
-        if (epochs <= 0)
-            break;
-
-        last_time = std::chrono::high_resolution_clock::now();
-
-        while (epochs--)
-        {
-            if (epochs != 0)
-            {
-                if (epochs % 5 == 0)
-                {
-                    curr_loss = get_loss(net, N, training);
-                    if (curr_loss > 1.025 * last_loss)
-                        LR *= 0.975; // If the loss increased, the training is unstable. Reduce the learning rate.
-                    last_loss = curr_loss;
-                }
-                if (epochs % 100 == 0)
-                {
-                    curr_time = std::chrono::high_resolution_clock::now();
-                    std::cout << "   Time Left: " << epochs * std::chrono::duration_cast<std::chrono::seconds>(curr_time - last_time) / 100 << ";   \tEpochs: " << epochs << ";\t\tLR: " << LR << ";   \tLoss: " << last_loss << "\n";
-                    last_time = curr_time;
-                }
-            }
-
-            std::shuffle(training.begin(), training.end(), gen); // Shuffle the order of the training data for this epoch
-            for (int i = 0; i < training.size(); i += vec_width)
-            {
-                for (int lane = 0; lane < vec_width; lane++)
-                {
-                    for (int j = 0; j < training[i].first.size(); j++)
-                        net[0].value[j][lane] = training[i + lane].first[j];
-                    for (int j = 0; j < training[i].second.size(); j++)
-                        expected_output.value[j][lane] = training[i + lane].second[j];
-                }
-                forward_propagation(net, N);
-                backward_propagation(net, N, expected_output);
-                if ((i + vec_width) % batch_size == 0) // Update the weight and biases after each batch
-                    update(net, N, LR, batch_size);
-            }
-        }
-
-        last_loss = get_loss(net, N, training);
-        std::cout << "Training complete. Loss: " << last_loss << "\n\n";
-    }
+              << " Testing set: " << testing_size << " / " << data.size() << " (" << 100 * testing.size() / data.size() << "%)\n"
+              << " Training set: " << training.size() / batch_size << 'x' << batch_size << " / " << data.size() << " (" << 100 * training.size() / data.size() << "%)\n\n\n";
 }
 
 void inference(NN &net, const int &N, std::ifstream &input_file, std::ofstream &output_file)
 {
     // Now we can use the trained NN to make predictions on new data
     std::cout << "Making predictions on data from input file... Saving to output file...\n";
-    std::string line;
-    while (std::getline(input_file, line))
+    std::string line[vec_width];
+    int laneI, laneO;
+    while (true)
     {
+        for (laneI = 0; laneI < vec_width; laneI++)
+            if (!std::getline(input_file, line[laneI]))
+                break;
+        if (laneI == 0)
+            break; // Nothing to do.
+
         read(line, net[0]);
         forward_propagation(net, N);
 
-        for (auto v : net[N + 1].value)
-            output_file << v[0] << " ";
-        output_file << "\n";
+        for (laneO = 0; laneO < laneI; laneO++)
+        {
+            for (auto v : net[N + 1].value)
+                output_file << v[laneO] << " ";
+            output_file << "\n";
+        }
+
+        if (laneI != vec_width)
+            break;
     }
 }
 
@@ -545,6 +596,7 @@ void load_network(NN &net, int &N, int &M, int &input_size, int &output_size, fl
 
     std::cout << "Network structure: " << N << " hidden layers, " << M << " nodes per layer.  |  Input layer: " << input_size << " nodes, output layer: " << output_size << " nodes.\n";
 
+    float temp;
     // layer = 0
     for (int j = 0; j < input_size; j++)
     {
@@ -552,8 +604,12 @@ void load_network(NN &net, int &N, int &M, int &input_size, int &output_size, fl
         in.clear();
         in.str(line);
         for (int k = 0; k < M; k++)
-            in >> net[0].weight[j][k];
-        in >> net[0].bias[j];
+        {
+            in >> temp;
+            net[0].weight[j][k] = simd_t(temp);
+        }
+        in >> temp;
+        net[0].bias[j] = simd_t(temp);
     }
 
     // layer = 1..N-1
@@ -564,8 +620,12 @@ void load_network(NN &net, int &N, int &M, int &input_size, int &output_size, fl
             in.clear();
             in.str(line);
             for (int k = 0; k < M; k++)
-                in >> net[i].weight[j][k];
-            in >> net[i].bias[j];
+            {
+                in >> temp;
+                net[i].weight[j][k] = simd_t(temp);
+            }
+            in >> temp;
+            net[i].bias[j] = simd_t(temp);
         }
 
     // layer = N
@@ -575,8 +635,12 @@ void load_network(NN &net, int &N, int &M, int &input_size, int &output_size, fl
         in.clear();
         in.str(line);
         for (int k = 0; k < output_size; k++)
-            in >> net[N].weight[j][k];
-        in >> net[N].bias[j];
+        {
+            in >> temp;
+            net[N].weight[j][k] = simd_t(temp);
+        }
+        in >> temp;
+        net[N].bias[j] = simd_t(temp);
     }
 
     // layer = N+1
@@ -585,7 +649,8 @@ void load_network(NN &net, int &N, int &M, int &input_size, int &output_size, fl
         std::getline(load_file, line);
         in.clear();
         in.str(line);
-        in >> net[N + 1].bias[j];
+        in >> temp;
+        net[N + 1].bias[j] = simd_t(temp);
     }
 }
 
@@ -599,8 +664,8 @@ void save_network(const NN &net, const int &N, const int &M, const int &input_si
         for (int i = 0; i < l.weight.size(); i++)
         {
             for (auto &w : l.weight[i])
-                save_file << w << ' ';
-            save_file << l.bias[i] << "\n";
+                save_file << w[0] << ' ';
+            save_file << l.bias[i][0] << "\n";
         }
 
     save_file.close();
@@ -608,17 +673,18 @@ void save_network(const NN &net, const int &N, const int &M, const int &input_si
 
 int main(int argc, char **argv)
 {
+    auto start = std::chrono::high_resolution_clock::now();
 
     std::cout << "\n\n\n";
 
     int N, M, input_size, output_size;
     float part_testing = 0.2f, LR = -1234;
 
-    int whereToSave = 0, batch_size = 1;
+    int whereToSave = 0, batch_size = 4, print = 500;
     std::ifstream data_file, load_file, input_file;
     std::ofstream output_file, save_file;
 
-    initialize(argc, argv, data_file, load_file, input_file, output_file, whereToSave, batch_size, part_testing, LR);
+    initialize(argc, argv, data_file, load_file, input_file, output_file, whereToSave, batch_size, part_testing, LR, print);
 
     dataset data, training, testing;
     if (data_file.is_open())
@@ -629,7 +695,7 @@ int main(int argc, char **argv)
 
     NN net;
 
-    std::mt19937 RNG(time(0)); // Random number generator for generating initial weight and biases and for shuffling the training data
+    std::mt19937 RNG(std::chrono::system_clock::to_time_t(start)); // Random number generator for generating initial weight and biases and for shuffling the training data
     float bound;
 
     if (load_file.is_open())
@@ -640,7 +706,7 @@ int main(int argc, char **argv)
         std::cin >> N >> M;
         bound = (M > 0) ? 1.0f / sqrt(M) : 0.0f;
         std::uniform_real_distribution<float> random_real(-1.0f * bound, +1.0f * bound); // Uniform distribution for shuffling the training data
-        buildNN(net, N, M, input_size, output_size, random_real, RNG);
+        build_NN(net, N, M, input_size, output_size, random_real, RNG);
     }
     else
     {
@@ -648,17 +714,17 @@ int main(int argc, char **argv)
         exit(-1);
     }
     if (LR == -1234)
-        LR = 0.5 / N;
+        LR = 0.5 / N; // Both build_NN and load_network ensure that N>0
 
     bool did_something = false;
     if (data_file.is_open())
     {
-        // std::shuffle(data.begin(), data.end(), RNG);
+        // std::shuffle(data.begin(), data.end(), RNG);  // Commented to keep the testing set consistent between attempts. Uncomment to enable better initial randomization.
         batch_size = (batch_size > 0 && batch_size * vec_width < data.size() * (1.0f - part_testing)) ? batch_size * vec_width : data.size() * (1.0f - part_testing);
         split_data(data, training, testing, batch_size, part_testing);
 
         std::cout << std::setprecision(4) << std::scientific;
-        train(net, N, M, input_size, output_size, training, LR, RNG, batch_size);
+        train(net, N, M, input_size, output_size, training, LR, RNG, batch_size, print);
         did_something = true;
         std::cout << "\nTraining Complete!\nLoss on testing dataset: " << get_loss(net, N, testing) << "\n\n";
     }
@@ -689,6 +755,6 @@ int main(int argc, char **argv)
     else if (did_something)
         std::cerr << "Warning: save file inaccessible. NN not saved.\n";
 
-    std::cout << "\n\n";
+    std::cout << "\nProgram Time: " << std::chrono::duration_cast<std::chrono::seconds>(std::chrono::high_resolution_clock::now() - start) << "\n\n\n";
     return 0;
 }
