@@ -33,14 +33,14 @@
 #include <random>
 #include <chrono>
 #include <cstdlib>
-// #include <simd>
-#include <experimental/simd>
+// #include <simd>   // Uncomment in C++26 or higher.
+#include <experimental/simd> // Comment in C++26 or higher.
 #include <algorithm>
 #include <string>
 #include <vector>
 
-// namespace simd = std::simd;
-namespace simd = std::experimental;
+// namespace simd = std::simd;  // See l36
+namespace simd = std::experimental; // See l37
 using simd_t = simd::native_simd<float>;
 constexpr std::size_t vec_width = simd_t::size();
 
@@ -48,7 +48,7 @@ void help(const std::string &exe)
 {
     std::cerr << " Common Usages:\n"
               << "   " << exe << " -d dataset.txt\n"
-              << "   " << exe << " -l trained_net.txt -i inputs.txt \n"
+              << "   " << exe << " -l trained_net.txt -i input.txt \n"
               << "\n"
               << " All Options: (order isn't important)\n"
               << "   -d --data <path>     Training data file containing space-separated input and output lines.\n"
@@ -68,6 +68,7 @@ void help(const std::string &exe)
               << " Example --data file format:\n"
               << "   <input1> <input2> <input3> ... <inputX>\n   <output1> <output2> ... <outputY>\n   <input1> <input2> <input3> ... <inputX>\n   <output1> <output2> ... <outputY>\n   ..."
               << "\n\n\n";
+
     exit(0);
 }
 
@@ -287,17 +288,16 @@ void backward_propagation(NN &net, const int &N, layer &expected_output)
     }
 
     // Backward pass
-    simd_t d_act;
     for (int i = N; i >= 0; i--)
         for (int j = 0; j < net[i].size(); j++)
         {
             net[i].delta[j] = simd_t(0.0f);
-            d_act = d_activation(net[i].value[j]);
             for (int k = 0; k < net[i + 1].size(); k++)
             {
-                net[i].delta[j] += net[i + 1].delta[k] * d_act * net[i].weight[j][k];
+                net[i].delta[j] += net[i + 1].delta[k] * net[i].weight[j][k];
                 net[i].grad_w[j][k] += net[i + 1].delta[k] * net[i].value[j];
             }
+            net[i].delta[j] *= d_activation(net[i].value[j]);
             net[i].grad_b[j] += net[i].delta[j];
         }
 }
@@ -345,7 +345,7 @@ float get_loss(NN &net, const int &N, dataset &data)
     return (cnt == 0) ? 0 : total_loss / cnt;
 }
 
-void train(NN &net, const int &N, const int &M, const int &input_size, const int &output_size, dataset &training, float &LR, std::mt19937 &gen, const int &batch_size = 16, const int &print = 500)
+void train(NN &net, const int &N, const int &M, const int &input_size, const int &output_size, dataset &training, float &LR, std::mt19937 &gen, const int &batch_size = 32, const int &print = 250)
 {
     float last_loss = get_loss(net, N, training), curr_loss;
     auto start = std::chrono::high_resolution_clock::now(), last_time = std::chrono::high_resolution_clock::now(), curr_time = std::chrono::high_resolution_clock::now();
@@ -680,7 +680,7 @@ int main(int argc, char **argv)
     int N, M, input_size, output_size;
     float part_testing = 0.2f, LR = -1234;
 
-    int whereToSave = 0, batch_size = 4, print = 500;
+    int whereToSave = 0, batch_size = 4, print = 250;
     std::ifstream data_file, load_file, input_file;
     std::ofstream output_file, save_file;
 
