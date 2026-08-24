@@ -7,7 +7,7 @@
     simpler - whether or not X is within [-0.5; +0.5] or not.
 
     Usage:      python makeNNdata.py [# of data points] [save_path] [give output? (Y/n)] [answer_path]
-    Defaults:   python makeNNdata.py        250         dataset.txt         True            ans.txt
+    Defaults:   python makeNNdata.py       16000        dataset.txt         True            ans.txt
     
     ^ Explanation ^: How many data points to generate; Where to save the generated points;
             Should I also give the answers (is this for training or for inferencing);
@@ -25,7 +25,7 @@ def bool_(arg):
     else:
         return True
 
-NUM_POINTS = int(argv[1]) if len(argv) > 1 else 250
+NUM_POINTS = int(argv[1]) if len(argv) > 1 else 16000
 OUTPUT_FILE = argv[2] if len(argv) > 2 else "dataset.txt"
 GIVE_OUTPUT = bool_(argv[3]) if len(argv) > 3 else True
 ANS_FILE = argv[4] if len(argv) > 4 else "ans.txt"

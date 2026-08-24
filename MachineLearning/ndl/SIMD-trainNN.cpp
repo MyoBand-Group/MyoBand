@@ -57,7 +57,7 @@ void help(const std::string &exe)
               << "   -t --testing <float> Set what proportion of the dataset (-d) should be for testing. Defaults to 0.20.\n"
               << "   -b --batch_size <int>         Set how big the training batches** should be (0 <=> BGD). Defaults to 4.\n"
               << "   -lr --learning_rate <float>   Set the initial learning rate for training. Defaults to 0.5/N.\n"
-              << "   -p --print <int>     How often to print status updates. Defaults to 500 (once every 500 epochs).\n"
+              << "   -p --print <int>     How often to print status updates. Defaults to 250 (once every 250 epochs).\n"
               << "   -i --inputs <path>   Load inference input from file.\n"
               << "   -o --output <path>   Save inference output to file. Defaults to output.txt.\n"
               << "   -h --help            Show this usage information.\n"
