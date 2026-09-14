@@ -311,13 +311,13 @@ struct layer
     {
         if (onDevice)
         {
-            cudaFreeHost(value);
-            cudaFreeHost(delta);
-            cudaFreeHost(bias);
-            cudaFreeHost(grad_b);
-            cudaFreeHost(weight_f);
-            cudaFreeHost(weight_b);
-            cudaFreeHost(grad_w);
+            CC(cudaFree(value));
+            CC(cudaFree(delta));
+            CC(cudaFree(bias));
+            CC(cudaFree(grad_b));
+            CC(cudaFree(weight_f));
+            CC(cudaFree(weight_b));
+            CC(cudaFree(grad_w));
         }
         else
         {
@@ -338,11 +338,10 @@ struct d_NN
     NN shells;
 };
 
-// Using cudaMemcpy on just "net" would only make device-side copies of the pointers towards the arrays (which are host-side).
 // Copying "net" to/from device is a two-step process. Same for datasets.
-layer layer_to_device_shell(const layer &host_layer, std::size_t value_count)
+// Using cudaMemcpy on just "net" would only make device-side copies of the pointers towards the arrays (which are host-side).
+void layer_to_device_shell(layer &d, const layer &host_layer, std::size_t value_count)
 {
-    layer d;
     d.onDevice = true;
     d.input_size = host_layer.input_size;
     d.output_size = host_layer.output_size;
@@ -370,22 +369,18 @@ layer layer_to_device_shell(const layer &host_layer, std::size_t value_count)
     }
     else
         d.delta = d.bias = d.grad_b = d.weight_f = d.weight_b = d.grad_w = nullptr;
-
-    return d;
 }
-d_NN NN_to_device(const NN &host_net, const int &D, const std::size_t &batch_size)
+void NN_to_device(d_NN &d_net, const NN &host_net, const int &D, const std::size_t &batch_size)
 {
-    d_NN d_net;
     d_net.shells = (NN)malloc((D + 2) * sizeof(layer));
     for (int i = 0; i < D + 2; i++)
     {
         std::size_t value_count = batch_size * host_net[i].size();
-        d_net.shells[i] = layer_to_device_shell(host_net[i], value_count);
+        layer_to_device_shell(d_net.shells[i], host_net[i], value_count);
     }
 
     CC(cudaMalloc(&d_net.head, (D + 2) * sizeof(layer)));
     CC(cudaMemcpy(d_net.head, d_net.shells, (D + 2) * sizeof(layer), cudaMemcpyHostToDevice));
-    return d_net;
 }
 void NN_from_device(NN host_net, const d_NN &d_net, const int &D)
 {
@@ -400,24 +395,17 @@ void NN_from_device(NN host_net, const d_NN &d_net, const int &D)
 }
 void free_NN(NN &host_net, const int &D)
 {
-    for (int i = 0; i < D + 2; ++i)
-        host_net[i].~layer();
+    for (int i = 0; i <= D + 1; i++)
+        host_net[i].~layer(); // onDevice = false;
     cudaFreeHost(host_net);
 }
 void free_d_NN(d_NN &d_net, const int &D)
 {
-    for (int i = 0; i < D + 2; i++)
-    {
-        CC(cudaFree(d_net.shells[i].value));
-        CC(cudaFree(d_net.shells[i].delta));
-        CC(cudaFree(d_net.shells[i].bias));
-        CC(cudaFree(d_net.shells[i].grad_b));
-        CC(cudaFree(d_net.shells[i].weight_f));
-        CC(cudaFree(d_net.shells[i].weight_b));
-        CC(cudaFree(d_net.shells[i].grad_w));
-    }
+    for (int i = 0; i <= D + 1; i++)
+        d_net.shells[i].~layer(); // onDevice = true;
     free(d_net.shells);
     CC(cudaFree(d_net.head));
+    free(&d_net);
 }
 
 void dataset_to_device(const float *host_data_in, const float *host_data_out, float *&dev_data_in, float *&dev_data_out, const std::size_t n, const std::size_t input_size, const std::size_t output_size)
@@ -428,7 +416,7 @@ void dataset_to_device(const float *host_data_in, const float *host_data_out, fl
     CC(cudaMemcpy(dev_data_out, host_data_out, n * output_size * sizeof(float), cudaMemcpyHostToDevice));
 }
 
-__device__ __forceinline__ unsigned int bitceil(unsigned int x)
+__device__ __forceinline__ int bitceil(const int &x)
 {
     return 1u << (32 - __clz(x - 1));
 }
@@ -462,15 +450,15 @@ __global__ void loss(float *ans, NN net, const int D, const float *data_out, con
         atomicAdd(ans, diff * diff);
     }
 }
-__device__ float d_loss(const float &expected, const float &output)
+__device__ __forceinline__ float d_loss(const float &expected, const float &output)
 {
     return 2 * (output - expected); // Derivative of the loss function with respect to the output
 }
-__device__ float activation(const float &x)
+__device__ __forceinline__ float activation(const float &x)
 {
     return x / (1.0f + abs(x));
 }
-__device__ float d_activation(const float &y)
+__device__ __forceinline__ float d_activation(const float &y)
 {
     float t = 1.0f - abs(y);
     return t * t;
@@ -552,6 +540,7 @@ __global__ void update(NN net, const int l, const float LR)
     {
         const int idx = node * net[l + 1].size() + in;
         net[l].weight_f[idx] -= LR * net[l].grad_w[idx];
+        net[l].weight_b[in * net[l].size() + node] = net[l].weight_f[idx];
         net[l].grad_w[idx] = 0.0f;
     }
 }
@@ -563,26 +552,6 @@ __global__ void update_last_bias(NN net, const int l, const float LR)
 
     net[l].bias[node] -= LR * net[l].grad_b[node];
     net[l].grad_b[node] = 0.0f;
-}
-#define TILE_DIM 32
-__global__ void transpose_weights(NN net, const int l)
-{
-    __shared__ float tile[TILE_DIM][TILE_DIM + 1]; // +1 padding avoids shared-mem bank conflicts
-
-    const std::size_t in_size = net[l].input_size;   // rows of weight_f
-    const std::size_t out_size = net[l].output_size; // cols of weight_f
-
-    int x = blockIdx.x * TILE_DIM + threadIdx.x; // column (out index) in weight_f
-    int y = blockIdx.y * TILE_DIM + threadIdx.y; // row (in index) in weight_f
-    if (x < out_size && y < in_size)
-        tile[threadIdx.y][threadIdx.x] = net[l].weight_f[y * out_size + x];
-
-    __syncthreads();
-
-    int tx = blockIdx.y * TILE_DIM + threadIdx.x; // now an "in" index
-    int ty = blockIdx.x * TILE_DIM + threadIdx.y; // now an "out" index
-    if (tx < in_size && ty < out_size)
-        net[l].weight_b[ty * in_size + tx] = tile[threadIdx.x][threadIdx.y];
 }
 
 std::pair<int *, int *> range(const std::size_t &n)
@@ -652,7 +621,7 @@ void train(d_NN &d_net, NN &net, const int &D, const int &N, const float *traini
 
     std::cout << "Training neural network on " << training_size << " data points. Initial loss: " << last_loss << "\n\n";
 
-    dim3 propGrid(N, batch_size), transBlock(TILE_DIM, TILE_DIM);
+    dim3 propGrid(N, batch_size);
 
     int epochs;
     while (true)
@@ -706,10 +675,7 @@ void train(d_NN &d_net, NN &net, const int &D, const int &N, const float *traini
                 CC(cudaGetLastError());
 
                 for (int l = 0; l <= D; l++)
-                {
                     update<<<net[l].size(), net[l + 1].size()>>>(d_net.head, l, LR / batch_size);
-                    transpose_weights<<<dim3((net[l + 1].size() + TILE_DIM - 1) / TILE_DIM, (net[l].size() + TILE_DIM - 1) / TILE_DIM), transBlock>>>(d_net.head, l);
-                }
                 update_last_bias<<<net[D + 1].size()>>>(d_net.head, D + 1, LR / batch_size);
                 CC(cudaGetLastError());
             }
@@ -988,7 +954,8 @@ int main(int argc, char **argv)
     if (LR == -0.7734f) // If uninitialized
         LR = 0.5f / D;  // Both build_NN and load_network ensure that D>0
 
-    d_NN d_net = NN_to_device(net, D, batch_size);
+    d_NN d_net;
+    NN_to_device(d_net, net, D, batch_size);
 
     cudaGetLastError(); // For some reason, CUDA sometimes has a harmless error on launch. Here I clear it before any of the actual CUDA code below.
 
