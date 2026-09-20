@@ -57,7 +57,7 @@ void help(const std::string &exe)
               << "   -t --testing <float> Set what proportion of the dataset (-d) should be for testing. Defaults to 0.20.\n"
               << "   -b --batch_size <int>         Set how big the training batches** should be (0 <=> BGD). Defaults to 4.\n"
               << "   -lr --learning_rate <float>   Set the initial learning rate for training. Defaults to 0.5/N.\n"
-              << "   -p --print <int>     How often to print status updates. Defaults to 250 (once every 250 epochs).\n"
+              << "   -p --print <int>     How often to print status updates, in milliseconds. Defaults to 5000.\n"
               << "   -i --inputs <path>   Load inference input from file.\n"
               << "   -o --output <path>   Save inference output to file. Defaults to output.txt.\n"
               << "   -h --help            Show this usage information.\n"
@@ -345,42 +345,45 @@ float get_loss(NN &net, const int &N, dataset &data)
     return (cnt == 0) ? 0 : total_loss / cnt;
 }
 
-void train(NN &net, const int &N, const int &M, const int &input_size, const int &output_size, dataset &training, float &LR, std::mt19937 &gen, const int &batch_size = 32, const int &print = 250)
+void train(NN &net, const int &N, const int &M, const int &input_size, const int &output_size, dataset &training, float &LR, std::mt19937 &gen, const int &batch_size = 32, const int &print = 5000)
 {
     float last_loss = get_loss(net, N, training), curr_loss;
-    auto start = std::chrono::high_resolution_clock::now(), last_time = std::chrono::high_resolution_clock::now(), curr_time = std::chrono::high_resolution_clock::now();
     std::cout << "Training neural network on " << training.size() << " data points. Initial loss: " << last_loss << "\n\n";
     layer expected_output(net.back().size());
     int epochs;
 
-    while (true)
-    {
-        std::cout << "How many epochs to train the NN for (0 to stop): ";
-        std::cin >> epochs;
-        if (epochs <= 0)
-            break;
+    auto start = std::chrono::high_resolution_clock::now(), last_time = std::chrono::high_resolution_clock::now(), curr_time = std::chrono::high_resolution_clock::now();
+
+	while(true){
+		std::cout<<"How many epochs to train the NN for: "; std::cin>>epochs;
+		if(epochs<=0)break;
 
         start = std::chrono::high_resolution_clock::now();
         last_time = std::chrono::high_resolution_clock::now();
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(curr_time - last_time);
+        int epochs_at_last_print = epochs;
 
-        while (epochs--)
+		while(epochs--)
         {
-            if (epochs != 0)
+			if(epochs%5==0)
             {
-                if (epochs % 10 == 0)
+                curr_loss=get_loss(net,N,training);
+                if(curr_loss>1.025*last_loss)
+                    LR*=0.975; //If the loss increased, the training is unstable. Reduce the learning rate.
+                last_loss=curr_loss;
+            }
+
+            if (print != 0) // The program should print interim status reports every print milliseconds{
+            {
+                curr_time = std::chrono::high_resolution_clock::now();
+                ms = std::chrono::duration_cast<std::chrono::milliseconds>(curr_time - last_time);
+                if (ms.count() >= print)
                 {
-                    curr_loss = get_loss(net, N, training);
-                    if (curr_loss > 1.025f * last_loss)
-                        LR *= 0.975f; // If the loss increased, the training is unstable. Reduce the learning rate.
-                    last_loss = curr_loss;
-                }
-                if (epochs % print == 0)
-                {
-                    curr_time = std::chrono::high_resolution_clock::now();
-                    ms = std::chrono::duration_cast<std::chrono::milliseconds>(curr_time - last_time);
-                    std::cout << "   Time Left: " << epochs / print * ms.count() / 1000 << "s;   \tEpochs: " << epochs << ";\t\tLR: " << LR << ";   \tLoss: " << last_loss << "\n";
+                    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(curr_time - start).count();
+                    const auto estimated_total_ms = elapsed_ms + (ms.count() * epochs) / (epochs_at_last_print - epochs);
+                    std::cout << "   Elapsed: " << elapsed_ms / 1000 << "s / " << estimated_total_ms / 1000 << "s;   \tEpochs remaining: " << epochs << ";\t\tLR: " << LR << ";   \tLoss: " << last_loss << "\n";
                     last_time = curr_time;
+                    epochs_at_last_print = epochs;
                 }
             }
 
@@ -680,7 +683,7 @@ int main(int argc, char **argv)
     int N, M, input_size, output_size;
     float part_testing = 0.2f, LR = -1234;
 
-    int whereToSave = 0, batch_size = 4, print = 250;
+    int whereToSave = 0, batch_size = 4, print = 5000;
     std::ifstream data_file, load_file, input_file;
     std::ofstream output_file, save_file;
 

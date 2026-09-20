@@ -397,7 +397,6 @@ void free_NN(NN &host_net, const int &D)
 {
     for (int i = 0; i <= D + 1; i++)
         host_net[i].~layer(); // onDevice = false;
-    cudaFreeHost(host_net);
 }
 void free_d_NN(d_NN &d_net, const int &D)
 {
@@ -405,7 +404,6 @@ void free_d_NN(d_NN &d_net, const int &D)
         d_net.shells[i].~layer(); // onDevice = true;
     free(d_net.shells);
     CC(cudaFree(d_net.head));
-    free(&d_net);
 }
 
 void dataset_to_device(const float *host_data_in, const float *host_data_out, float *&dev_data_in, float *&dev_data_out, const std::size_t n, const std::size_t input_size, const std::size_t output_size)

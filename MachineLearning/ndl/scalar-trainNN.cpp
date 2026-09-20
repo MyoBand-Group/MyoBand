@@ -24,6 +24,7 @@
 #include<cmath>
 #include<random>
 #include<ctime>
+#include<chrono>
 #include<cstdlib>
 #include<numeric>
 #include<algorithm>
@@ -42,7 +43,7 @@ std::mt19937 RNG(time(0)); //Random number generator for generating initial weig
 }*/
 
 void initialize(int& argc, char** argv, std::ifstream& data_file, std::ifstream& load_file, std::ifstream& input_file,
-				std::ofstream& output_file, int& whereToSave, int& batches, float& part_testing){
+				std::ofstream& output_file, int& whereToSave, int& batches, float& part_testing, int& print){
 
 	bool show_help = false;
 	if(argc==1) show_help = true;
@@ -88,12 +89,23 @@ void initialize(int& argc, char** argv, std::ifstream& data_file, std::ifstream&
                 std::cerr << "Error: could not open load file: " << argv[i] << "\n";
                 exit(-1);
             }
-        } else if (arg == "--save" || arg == "-s") {
-            if (++i >= argc) {
-                std::cerr << "Missing value for --save\n";
+
+        } else if (arg == "--print" || arg == "-p"){
+            if (++i >= argc){
+                std::cerr << "Missing value for --print\n";
                 exit(-1);
             }
-            whereToSave = i;
+            print = std::stoi(argv[i]);
+            if (print <= 0){
+                std::cerr << "Error: --print must be greater than zero seconds\n";
+                exit(-1);
+            }
+        } else if (arg == "--save" || arg == "-s") {
+        if (++i >= argc) {
+            std::cerr << "Missing value for --save\n";
+            exit(-1);
+        }
+        whereToSave = i;
         } else if (arg == "--learning_rate" || arg == "-lr") {
             if (++i >= argc) {
                 std::cerr << "Missing value for --lr\n";
@@ -141,6 +153,7 @@ void initialize(int& argc, char** argv, std::ifstream& data_file, std::ifstream&
               << "  -d --data <path>     Training data file containing space-separated input and output lines.\n"
               << "  -l --load <path>     Load a trained model from file to inference with.\n"
               << "  -s --save <path>     Save the trained model to file. Defaults to trained_net.txt.\n"
+              << "  -p --print <int>     How often to print status updates, in milliseconds. Defaults to 5000.\n"
 			  << "  -t --testing <float> Set what proportion of the dataset (-d) should be for testing. Defaults to 0.20.\n"
 			  << "  -b --batches <int>   Set how many batches to divide the training set into (0 <=> SGD). Defaults to 25.\n"
 			  << "  -lr --learning_rate <float>   Set the initial learning rate for training. Defaults is 0.5/N.\n"
@@ -312,27 +325,45 @@ double get_loss(NN& net, dataset& data){
 	return (cnt==0) ? 0 : total_loss/cnt;
 }
 
-void train(NN& net, dataset& training, const int& batches=10){
+void train(NN& net, dataset& training, const int& batches=10, const int& print=5000){
 	double last_loss=get_loss(net,training),curr_loss;
 	std::cout<<"Training neural network on "<<training.size()<<" data points. Initial loss: "<<last_loss<<"\n";
 	layer expected_output(net.back().size());
 	int epochs,batch_size=training.size()/batches;
 
+    auto start = std::chrono::high_resolution_clock::now(), last_time = std::chrono::high_resolution_clock::now(), curr_time = std::chrono::high_resolution_clock::now();
+
 	while(true){
 		std::cout<<"How many epochs to train the NN for: "; std::cin>>epochs;
 		if(epochs<=0)break;
 
+        start = std::chrono::high_resolution_clock::now();
+        last_time = std::chrono::high_resolution_clock::now();
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(curr_time - last_time);
+        int epochs_at_last_print = epochs;
+
 		while(epochs--){
-			if(epochs!=0){
-				if(epochs%5==0){
-					curr_loss=get_loss(net,training);
-					if(curr_loss>1.025*last_loss)
-						LR*=0.975; //If the loss increased, the training is unstable. Reduce the learning rate.
-					last_loss=curr_loss;
-				}
-				if(epochs%100==0)
-					std::cout<<"  Epochs: "<<epochs<<";   \tLR: "<<LR<<";   \tLoss: "<<last_loss<<"\n";
-			}
+
+			if(epochs%5==0){
+                curr_loss=get_loss(net,training);
+                if(curr_loss>1.025*last_loss)
+                    LR*=0.975; //If the loss increased, the training is unstable. Reduce the learning rate.
+                last_loss=curr_loss;
+            }
+
+            if (print != 0) // The program should print interim status reports every print milliseconds{
+            {
+                curr_time = std::chrono::high_resolution_clock::now();
+                ms = std::chrono::duration_cast<std::chrono::milliseconds>(curr_time - last_time);
+                if (ms.count() >= print)
+                {
+                    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(curr_time - start).count();
+                    const auto estimated_total_ms = elapsed_ms + (ms.count() * epochs) / (epochs_at_last_print - epochs);
+                    std::cout << "   Elapsed: " << elapsed_ms / 1000 << "s / " << estimated_total_ms / 1000 << "s;   \tEpochs remaining: " << epochs << ";\t\tLR: " << LR << ";   \tLoss: " << last_loss << "\n";
+                    last_time = curr_time;
+                    epochs_at_last_print = epochs;
+                }
+            }
 
 			std::shuffle(training.begin(), training.end(), RNG); //Shuffle the order of the training data for this epoch
 			for(int i=0; i<training.size(); i++){
@@ -346,7 +377,7 @@ void train(NN& net, dataset& training, const int& batches=10){
 					update(net,batch_size);
 			}
 		}
-		
+
 		last_loss=get_loss(net,training);
 		std::cout<<"Training complete. Loss: "<<last_loss<<"\n\n";
 	}
@@ -372,7 +403,7 @@ void create_nn(NN& net,std::ifstream& data_file){
 void load_network(NN& net, std::ifstream& load_file){
 	std::cout<<"Loading neural network from file...\n";
 	std::string line;
-	
+
 	std::getline(load_file,line);
 	std::istringstream in(line);
 	in>>N; in>>M;
@@ -440,15 +471,16 @@ void save_network(const NN& net, std::ofstream& save_file){
 
 
 int main(int argc, char** argv){
-	std::cout<<"\n\n";
-	
-	int whereToSave=0,batches=25; float part_testing=0.2;
+    auto start = std::chrono::system_clock::now();
+    std::cout << "\n\n\n";
+
+	int whereToSave=0,batches=25, print=5000; float part_testing=0.2;
 	//std::string activation,loss;
 	std::ifstream data_file,load_file,input_file;
 	std::ofstream output_file,save_file;
-	initialize(argc,argv,data_file,load_file,input_file,output_file,whereToSave,batches,part_testing);
+	initialize(argc,argv,data_file,load_file,input_file,output_file,whereToSave,batches,part_testing,print);
 	dataset data,training,testing; NN net;
-	
+
 	if(load_file.is_open())
 		load_network(net,load_file);
 	else if(data_file.is_open())
@@ -459,7 +491,7 @@ int main(int argc, char** argv){
 	}
 	if(LR==-1) LR= (N>1) ? 0.5/N : 0.5;
 	std::cout<<'\n';
-	
+
 	bool did_something=false;
 	if(data_file.is_open()){
 		get_data(data_file,data,net[0].size(),net[N+1].size());
@@ -467,7 +499,7 @@ int main(int argc, char** argv){
 		if(batches==0 || batches>data.size()*(1.0f-part_testing)) batches=data.size()*(1.0f-part_testing); //batches=0 <=> user wants SGD
 		split_data(data,training,testing,batches,part_testing);
 		std::cout<<std::setprecision(5)<<std::scientific;
-		train(net,training,batches);
+		train(net,training,batches,print);
 		did_something=true;
 		std::cout<<"\nTraining Complete!\nLoss on testing dataset: "<<get_loss(net,testing)<<"\n\n";
 	}
@@ -486,14 +518,14 @@ int main(int argc, char** argv){
 	load_file.close();
 	input_file.close();
 	output_file.close();
-	
+
 	//Save the trained NN to a file
 	if(whereToSave!=0)save_file.open(argv[whereToSave]);
 	else if(did_something) save_file.open("trained_net.txt");
 	if(save_file.is_open()) save_network(net, save_file);
 	else if(did_something) std::cerr<<"Warning: save file inaccessible. NN not saved.\n";
 	save_file.close();
-	
-	std::cout<<"\n\n";
-	return 0;
+
+    std::cout << "\nProgram Time: " << std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now() - start).count() << "s\n\n\n";
+    return 0;
 }
