@@ -1,13 +1,13 @@
 /*  Author: Nikola D. Lilov, 14 Sep 2026
  *
- *  Desc: Trains a simple NxM neural network with decreasing LR, a squared
- *  loss function and the x/1+abs(x) activation function. Instead of propagating
- *  one training example at a time, the GPU is fed `parallel_samples` at once.
- *  Specifically, it uses a cuBLAS-based matmul for which all the samples are
+ *  Desc: Trains a simple NxM neural network with an Adam optimizer, decreasing LR,
+ *  a squared loss function and the x/1+abs(x) activation function. Instead of
+ *  propagating one training example at a time, the GPU is fed `parallel_samples` at
+ *  once. Specifically, it uses a cuBLAS-based matmul for which all the samples are
  *  caluclated at the same time. (The kernels should work with reasonable parameters,
  *  but I would just give them 512 threads & the repsective amuont of blocks).
- *  Requires a training dataset file with alternating input and output lines.
- *  Saves (and can load) the trained net to a file for later retraining or inferencing.
+ *  Requires a training dataset file with alternating input and output lines. Saves
+ *  (and can load) the trained net to a file for later retraining or inferencing.
  *
  *  Requirements:       CUDA-compatible GPU (NVIDIA) ; CUDA toolkit drivers ; cuBLAS.
  *
@@ -36,7 +36,6 @@
 #include <cmath>
 #include <random>
 #include <chrono>
-#include <ctime>
 #include <cstdio>
 #include <cstdlib>
 #include <cuda_runtime_api.h>
@@ -184,7 +183,7 @@ void initialize(int &argc, char **argv, std::ifstream &data_file, std::ifstream 
                 }
                 whereToSave = i;
             }
-            else if (arg == "--learning_rate" || arg == "-lr")
+            else if (arg == "--learning_rate" || arg == "-lr" || arg == "--lr")
             {
                 if (++i >= argc)
                 {
@@ -243,11 +242,13 @@ struct layer
 {
     bool onDevice = false;
     std::size_t input_size, output_size;
-    float *value, *delta, *bias, *grad_b, *weight;
+    float *value, *delta, *bias, *grad_b, *weight, *grad_w;
     // Every node stores its value and delta=dL/dvalue. More specifically, for each of those it has samples slots (2D array).
     // Every node has a bias (1D array).
     // Every node has a weight to every next node (2D array).
-    // Use the grad_b (1D array) variables to store the results of the deltas for each sample to then update the bias at once at the end of the batch.
+    // Use the grad_ variables to store the summed results of the deltas from the samples to then update the parameter at once at the end of the batch.
+    float *m_b, *v_b, *m_w, *v_w;
+    // Variables storing information for the Adam optimizer (m is for the momentum step; v is for the RMSprop step).
 
     layer() = default;
 
@@ -256,6 +257,7 @@ struct layer
         input_size = in_size;
         output_size = 0;
         value = (float *)malloc(input_size * batch_size * sizeof(float));
+        delta = bias = grad_b = weight = grad_w = m_b = v_b = m_w = v_w = nullptr;
     }
 
     layer(const std::size_t &in_size, const std::size_t &out_size, const std::string *load, const std::size_t &batch_size) // Used only for loading a ready-made network. Assumes load_size=in.
@@ -268,9 +270,6 @@ struct layer
         delta = (float *)malloc(input_size * batch_size * sizeof(float));
         memset(delta, 0.0f, input_size * batch_size * sizeof(float));
 
-        grad_b = (float *)malloc(input_size * sizeof(float));
-        memset(grad_b, 0.0f, input_size * sizeof(float));
-
         weight = (float *)malloc(input_size * output_size * sizeof(float));
         bias = (float *)malloc(input_size * sizeof(float));
         std::istringstream in;
@@ -282,6 +281,20 @@ struct layer
                 in >> weight[j * output_size + k];
             in >> bias[j];
         }
+
+        grad_b = (float *)malloc(input_size * sizeof(float));
+        memset(grad_b, 0.0f, input_size * sizeof(float));
+        grad_w = (float *)malloc(input_size * output_size * sizeof(float));
+        memset(grad_w, 0.0f, input_size * output_size * sizeof(float));
+
+        m_b = (float *)malloc(input_size * sizeof(float));
+        memset(m_b, 0.0f, input_size * sizeof(float));
+        v_b = (float *)malloc(input_size * sizeof(float));
+        memset(v_b, 0.0f, input_size * sizeof(float));
+        m_w = (float *)malloc(input_size * output_size * sizeof(float));
+        memset(m_w, 0.0f, input_size * output_size * sizeof(float));
+        v_w = (float *)malloc(input_size * output_size * sizeof(float));
+        memset(v_w, 0.0f, input_size * output_size * sizeof(float));
     }
 
     layer(const std::size_t &in_size, const std::size_t &out_size, std::uniform_real_distribution<float> &distribution, std::mt19937 &gen, const std::size_t &batch_size) // Normal Constructor
@@ -294,9 +307,6 @@ struct layer
         delta = (float *)malloc(input_size * batch_size * sizeof(float));
         memset(delta, 0.0f, input_size * batch_size * sizeof(float));
 
-        grad_b = (float *)malloc(input_size * sizeof(float));
-        memset(grad_b, 0.0f, input_size * sizeof(float));
-
         weight = (float *)malloc(input_size * output_size * sizeof(float));
         bias = (float *)malloc(input_size * sizeof(float));
         for (int i = 0; i < input_size; i++)
@@ -305,6 +315,20 @@ struct layer
                 weight[i * output_size + j] = distribution(gen);
             bias[i] = distribution(gen);
         }
+
+        grad_b = (float *)malloc(input_size * sizeof(float));
+        memset(grad_b, 0.0f, input_size * sizeof(float));
+        grad_w = (float *)malloc(input_size * output_size * sizeof(float));
+        memset(grad_w, 0.0f, input_size * output_size * sizeof(float));
+
+        m_b = (float *)malloc(input_size * sizeof(float));
+        memset(m_b, 0.0f, input_size * sizeof(float));
+        v_b = (float *)malloc(input_size * sizeof(float));
+        memset(v_b, 0.0f, input_size * sizeof(float));
+        m_w = (float *)malloc(input_size * output_size * sizeof(float));
+        memset(m_w, 0.0f, input_size * output_size * sizeof(float));
+        v_w = (float *)malloc(input_size * output_size * sizeof(float));
+        memset(v_w, 0.0f, input_size * output_size * sizeof(float));
     }
 
     __host__ __device__ std::size_t size() const
@@ -321,6 +345,11 @@ struct layer
             CC(cudaFree(bias));
             CC(cudaFree(grad_b));
             CC(cudaFree(weight));
+            CC(cudaFree(grad_w));
+            CC(cudaFree(m_b));
+            CC(cudaFree(v_b));
+            CC(cudaFree(m_w));
+            CC(cudaFree(v_w));
         }
         else
         {
@@ -329,6 +358,11 @@ struct layer
             free(bias);
             free(grad_b);
             free(weight);
+            free(grad_w);
+            free(m_b);
+            free(v_b);
+            free(m_w);
+            free(v_w);
         }
     }
 };
@@ -363,9 +397,20 @@ void layer_to_device_shell(layer &d, const layer &host_layer, std::size_t value_
         CC(cudaMemcpy(d.grad_b, host_layer.grad_b, bsize, cudaMemcpyHostToDevice));
         CC(cudaMalloc(&d.weight, wsize));
         CC(cudaMemcpy(d.weight, host_layer.weight, wsize, cudaMemcpyHostToDevice));
+        CC(cudaMalloc(&d.grad_w, wsize));
+        CC(cudaMemcpy(d.grad_w, host_layer.grad_w, wsize, cudaMemcpyHostToDevice));
+
+        CC(cudaMalloc(&d.m_b, bsize));
+        CC(cudaMemcpy(d.m_b, host_layer.m_b, bsize, cudaMemcpyHostToDevice));
+        CC(cudaMalloc(&d.v_b, bsize));
+        CC(cudaMemcpy(d.v_b, host_layer.v_b, bsize, cudaMemcpyHostToDevice));
+        CC(cudaMalloc(&d.m_w, wsize));
+        CC(cudaMemcpy(d.m_w, host_layer.m_w, wsize, cudaMemcpyHostToDevice));
+        CC(cudaMalloc(&d.v_w, wsize));
+        CC(cudaMemcpy(d.v_w, host_layer.v_w, wsize, cudaMemcpyHostToDevice));
     }
     else
-        d.delta = d.bias = d.grad_b = d.weight = nullptr;
+        d.delta = d.bias = d.grad_b = d.weight = d.grad_w = d.m_b = d.v_b = d.m_w = d.v_w = nullptr;
 }
 void NN_to_device(d_NN &d_net, const NN &host_net, const int &D, const std::size_t &batch_size)
 {
@@ -435,30 +480,26 @@ __device__ float reduce(const float val, const bool flag)
 }
 
 cublasHandle_t handle;
-cudaError_t matmul(float *C, float *A, float *B, const int &first_dim_C, const int &second_dim_C, const int &common_dim_AB, const std::string &context, const float &LR = 0.25f)
+cudaError_t matmul(float *C, float *A, float *B, const int &first_dim_C, const int &second_dim_C, const int &common_dim_AB, const std::string &context)
 {
-    float alpha, beta;
+    float alpha = 1.0f, beta;
     if (context == "forward" || context == "Forward" || context == "fp" || context == "FP")
     {
-        alpha = beta = 1.0f;
+        beta = 1.0f;
         CC(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_T, second_dim_C, first_dim_C, common_dim_AB, &alpha, B, second_dim_C, A, first_dim_C, &beta, C, second_dim_C));
     }
     else if (context == "backward" || context == "Backward" || context == "bp" || context == "BP")
     {
-        alpha = 1.0f;
         beta = 0.0f;
         CC(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, second_dim_C, first_dim_C, common_dim_AB, &alpha, B, second_dim_C, A, common_dim_AB, &beta, C, second_dim_C));
     }
     else if (context == "gradient" || context == "Gradient" || context == "gd" || context == "GD")
     {
-        alpha = -LR;
-        beta = 1.0f;
+        beta = 0.0f;
         CC(cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, second_dim_C, first_dim_C, common_dim_AB, &alpha, B, common_dim_AB, A, common_dim_AB, &beta, C, second_dim_C));
     }
     else
-    {
-        std::cerr << "Unexpected context given for void matmul(). Options: \"forward\", \"backward\", \"gradient\"\n";
-    }
+        std::cerr << "Unexpected context given for `void matmul()`. Options: \"forward\", \"backward\", \"gradient\"\n";
 
     CC(cudaDeviceSynchronize()); // This is the first general CC in the code; if it fails here it might not be matmul()'s fault but a prior issue in the code.
     return cudaGetLastError();
@@ -565,26 +606,49 @@ cudaError_t backward_propagate(d_NN &d_net, NN &net, const int &D, const float *
     return cudaGetLastError();
 }
 
-__global__ void GD_bias(NN net, const int l, const float LR)
+__global__ void GD_weight(NN net, const int l, const float LR, const float pow_beta1_t, const float pow_beta2_t, const float beta1 = 0.9f, const float beta2 = 0.99f)
+{
+    const int node = blockIdx.y, dest = blockIdx.x * blockDim.x + threadIdx.x;
+    const bool flag = (dest < net[l + 1].size() && node < net[l].size());
+
+    if (flag)
+    {
+        net[l].m_w[node * net[l + 1].size() + dest] = beta1 * net[l].m_w[node * net[l + 1].size() + dest] + (1 - beta1) * net[l].grad_w[node * net[l + 1].size() + dest];
+        net[l].v_w[node * net[l + 1].size() + dest] = beta2 * net[l].v_w[node * net[l + 1].size() + dest] + (1 - beta2) * net[l].grad_w[node * net[l + 1].size() + dest] * net[l].grad_w[node * net[l + 1].size() + dest];
+
+        net[l].weight[node * net[l + 1].size() + dest] -= LR * (net[l].m_w[node * net[l + 1].size() + dest] / (1 - pow_beta1_t)) / (1e-6f + std::sqrt(net[l].v_w[node * net[l + 1].size() + dest] / (1 - pow_beta2_t)));
+        net[l].grad_w[node * net[l + 1].size() + dest] = 0.0f;
+    }
+}
+__global__ void GD_bias(NN net, const int l, const float LR, const float pow_beta1_t, const float pow_beta2_t, const float beta1 = 0.9f, const float beta2 = 0.99f)
 {
     const int node = blockIdx.x * blockDim.x + threadIdx.x;
     const bool flag = (node < net[l].size());
 
     if (flag)
     {
-        net[l].bias[node] -= LR * net[l].grad_b[node];
+        net[l].m_b[node] = beta1 * net[l].m_b[node] + (1 - beta1) * net[l].grad_b[node];
+        net[l].v_b[node] = beta2 * net[l].v_b[node] + (1 - beta2) * net[l].grad_b[node] * net[l].grad_b[node];
+
+        net[l].bias[node] -= LR * (net[l].m_b[node] / (1 - pow_beta1_t)) / (1e-6f + std::sqrt(net[l].v_b[node] / (1 - pow_beta2_t)));
         net[l].grad_b[node] = 0.0f;
     }
 }
+const float beta1 = 0.9f, beta2 = 0.99f;
+float pow_beta1_t = 1.0f, pow_beta2_t = 1.0f;
 cudaError_t gradient_descent(d_NN &d_net, NN &net, const int &D, const float &LR, const std::size_t &batch_size)
 {
+    pow_beta1_t *= beta1;
+    pow_beta2_t *= beta2;
+
     for (int l = 0; l <= D; l++)
     {
-        CC(matmul(d_net.shells[l].weight, d_net.shells[l].value, d_net.shells[l + 1].delta, net[l].size(), net[l + 1].size(), batch_size, "gradient", LR / batch_size));
+        CC(matmul(d_net.shells[l].grad_w, d_net.shells[l].value, d_net.shells[l + 1].delta, net[l].size(), net[l + 1].size(), batch_size, "gradient"));
+        GD_weight<<<dim3((net[l + 1].size() + SAMPLES - 1) / SAMPLES, net[l].size()), SAMPLES>>>(d_net.head, l, LR / batch_size, pow_beta1_t, pow_beta2_t, beta1, beta2);
         if (l != 0)
-            GD_bias<<<(net[l].size() + SAMPLES - 1) / SAMPLES, SAMPLES>>>(d_net.head, l, LR / batch_size);
+            GD_bias<<<(net[l].size() + SAMPLES - 1) / SAMPLES, SAMPLES>>>(d_net.head, l, LR / batch_size, pow_beta1_t, pow_beta2_t, beta1, beta2);
     }
-    GD_bias<<<(net[D + 1].size() + SAMPLES - 1) / SAMPLES, SAMPLES>>>(d_net.head, D + 1, LR / batch_size);
+    GD_bias<<<(net[D + 1].size() + SAMPLES - 1) / SAMPLES, SAMPLES>>>(d_net.head, D + 1, LR / batch_size, pow_beta1_t, pow_beta2_t, beta1, beta2);
 
     CC(cudaDeviceSynchronize());
     return cudaGetLastError();
@@ -670,7 +734,7 @@ void train(d_NN &d_net, NN &net, const int &D, const int &N, const float *traini
                 last_loss = curr_loss;
             }
 
-            if (print != 0) // If the program should print interim status reports every print milliseconds{
+            if (print != 0) // The program should print interim status reports every print milliseconds{
             {
                 curr_time = std::chrono::high_resolution_clock::now();
                 ms = std::chrono::duration_cast<std::chrono::milliseconds>(curr_time - last_time);
@@ -804,7 +868,8 @@ void analyzeInputFile(std::ifstream &inference_file, std::size_t &inference_size
 void read(const std::string &line, const std::size_t &line_size, float *v, const int &sample, const std::size_t &batch_size)
 {
     std::istringstream in(line);
-    for (int i = 0; i < line_size && in >> v[i * batch_size + sample]; i++);
+    for (int i = 0; i < line_size && in >> v[i * batch_size + sample]; i++)
+        ;
 }
 void get_training_data(std::ifstream &data_file, const int &data_size, float *&data_in, float *&data_out, const std::size_t &input_size, const std::size_t &output_size)
 {
@@ -934,6 +999,8 @@ int main(int argc, char **argv)
 
     float *data_in = nullptr, *data_out = nullptr, *training_in = nullptr, *training_out = nullptr, *testing_in = nullptr, *testing_out = nullptr, *inferencing_in = nullptr;
     std::size_t data_size, training_size, testing_size, inferencing_size;
+
+    // Get Input/output format of the data file and the number of data points in it.
     if (data_file.is_open())
     {
         analyzeDataFile(data_file, input_size, output_size, data_size);
@@ -944,8 +1011,8 @@ int main(int argc, char **argv)
 
     NN net;
 
+    // Load from file / create the neural network
     std::mt19937 RNG(std::chrono::system_clock::to_time_t(start)); // Random number generator for generating initial weight and biases and for shuffling the training data
-
     if (load_file.is_open())
         load_network(net, D, N, input_size, output_size, LR, load_file, batch_size);
     else if (data_file.is_open())
@@ -984,6 +1051,7 @@ int main(int argc, char **argv)
     cudaGetLastError(); // For some reason, CUDA sometimes has a harmless error on launch. Here I clear it before any of the actual CUDA code below.
 
     bool did_something = false;
+    // Train the NN on data from data file
     if (data_file.is_open())
     {
         // std::shuffle(data.begin(), data.end(), RNG);  // Commented to keep the testing set consistent between attempts. Uncomment to enable better initial randomization.
@@ -1002,6 +1070,7 @@ int main(int argc, char **argv)
         NN_from_device(net, d_net, D);
     }
 
+    // Inference on data from input file
     if (inference_file.is_open())
     {
         analyzeInputFile(inference_file, inferencing_size);
@@ -1036,7 +1105,6 @@ int main(int argc, char **argv)
         CUDA_errorlog.close();
     }
 
-    // Close files
     data_file.close();
     load_file.close();
     inference_file.close();
