@@ -644,15 +644,18 @@ void train(d_NN &d_net, NN &net, const int &D, const int &N, const float *traini
                 last_loss = curr_loss;
             }
 
-            curr_time = std::chrono::high_resolution_clock::now();
-            ms = std::chrono::duration_cast<std::chrono::milliseconds>(curr_time - last_time);
-            if (ms.count() >= print)
+            if (print != 0) // The program should print interim status reports every print milliseconds{
             {
-                const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(curr_time - start).count();
-                const auto estimated_total_ms = elapsed_ms + (ms.count() * epochs) / (epochs_at_last_print - epochs);
-                std::cout << "   Elapsed: " << elapsed_ms / 1000 << "s / " << estimated_total_ms / 1000 << "s;   \tEpochs remaining: " << epochs << ";\t\tLR: " << LR << ";   \tLoss: " << last_loss << "\n";
-                last_time = curr_time;
-                epochs_at_last_print = epochs;
+                curr_time = std::chrono::high_resolution_clock::now();
+                ms = std::chrono::duration_cast<std::chrono::milliseconds>(curr_time - last_time);
+                if (ms.count() >= print)
+                {
+                    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(curr_time - start).count();
+                    const auto estimated_total_ms = elapsed_ms + (ms.count() * epochs) / (epochs_at_last_print - epochs);
+                    std::cout << "   Elapsed: " << elapsed_ms / 1000 << "s / " << estimated_total_ms / 1000 << "s   |   Epochs remaining: " << epochs << "    |    LR: " << LR << "   |   Loss: " << last_loss << "\n";
+                    last_time = curr_time;
+                    epochs_at_last_print = epochs;
+                }
             }
 
             std::shuffle(orders.first, orders.first + training_size, gen); // Shuffle the order of the training data for this epoch

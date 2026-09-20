@@ -359,7 +359,7 @@ void train(NN& net, dataset& training, const int& batches=10, const int& print=5
                 {
                     const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(curr_time - start).count();
                     const auto estimated_total_ms = elapsed_ms + (ms.count() * epochs) / (epochs_at_last_print - epochs);
-                    std::cout << "   Elapsed: " << elapsed_ms / 1000 << "s / " << estimated_total_ms / 1000 << "s;   \tEpochs remaining: " << epochs << ";\t\tLR: " << LR << ";   \tLoss: " << last_loss << "\n";
+                    std::cout << "   Elapsed: " << elapsed_ms / 1000 << "s / " << estimated_total_ms / 1000 << "s   |   Epochs remaining: " << epochs << "    |    LR: " << LR << "   |   Loss: " << last_loss << "\n";
                     last_time = curr_time;
                     epochs_at_last_print = epochs;
                 }

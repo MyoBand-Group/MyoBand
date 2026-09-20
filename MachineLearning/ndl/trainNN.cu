@@ -91,8 +91,8 @@ void help(const std::string &exe)
               << "   -l --load <path>     Load a trained model from file to inference* with.\n"
               << "   -s --save <path>     Save the trained model to file. Defaults to trained_net.txt.\n"
               << "   -t --testing <float> Set what proportion of the dataset (-d) should be for testing. Defaults to 0.20.\n"
-              << "   -b --batch_size <int>         Set how many samples should be propagated in parallel before evolving (0 <=> BGD). Defaults to 512.\n"
-              << "   -lr --learning_rate <float>   Set the initial learning rate for training. Defaults to 0.5/D.\n"
+              << "   -b --batch_size <int>         Set how many samples should be propagated in parallel before evolving (0 <=> BGD). Defaults to BGD/4.\n"
+              << "   -lr --learning_rate <float>   Set the initial learning rate for training. Defaults to 0.1/D.\n"
               << "   -p --print <int>     How often to print status updates, in milliseconds. Defaults to 5000.\n"
               << "   -i --inputs <path>   Load inference input from file.\n"
               << "   -o --output <path>   Save inference output to file. Defaults to output.txt.\n"
@@ -501,7 +501,6 @@ cudaError_t matmul(float *C, float *A, float *B, const int &first_dim_C, const i
     else
         std::cerr << "Unexpected context given for `void matmul()`. Options: \"forward\", \"backward\", \"gradient\"\n";
 
-    CC(cudaDeviceSynchronize()); // This is the first general CC in the code; if it fails here it might not be matmul()'s fault but a prior issue in the code.
     return cudaGetLastError();
 }
 
@@ -558,7 +557,6 @@ cudaError_t forward_propagate(d_NN &d_net, NN &net, const int &D, const float *t
         activation<<<(net[l].size() + SAMPLES - 1) / SAMPLES, SAMPLES>>>(d_net.shells[l].value, d_net.shells[l].size() * batch_size);
     }
 
-    CC(cudaDeviceSynchronize());
     return cudaGetLastError();
 }
 
@@ -602,7 +600,6 @@ cudaError_t backward_propagate(d_NN &d_net, NN &net, const int &D, const float *
         update_grad_b<<<dim3((batch_size + SAMPLES - 1) / SAMPLES, net[l].size()), SAMPLES>>>(d_net.head, l, training_size, order, order_size, batch_size);
     }
 
-    CC(cudaDeviceSynchronize());
     return cudaGetLastError();
 }
 
@@ -644,13 +641,12 @@ cudaError_t gradient_descent(d_NN &d_net, NN &net, const int &D, const float &LR
     for (int l = 0; l <= D; l++)
     {
         CC(matmul(d_net.shells[l].grad_w, d_net.shells[l].value, d_net.shells[l + 1].delta, net[l].size(), net[l + 1].size(), batch_size, "gradient"));
-        GD_weight<<<dim3((net[l + 1].size() + SAMPLES - 1) / SAMPLES, net[l].size()), SAMPLES>>>(d_net.head, l, LR / batch_size, pow_beta1_t, pow_beta2_t, beta1, beta2);
+        GD_weight<<<dim3((net[l + 1].size() + SAMPLES - 1) / SAMPLES, net[l].size()), SAMPLES>>>(d_net.head, l, LR, pow_beta1_t, pow_beta2_t, beta1, beta2);
         if (l != 0)
-            GD_bias<<<(net[l].size() + SAMPLES - 1) / SAMPLES, SAMPLES>>>(d_net.head, l, LR / batch_size, pow_beta1_t, pow_beta2_t, beta1, beta2);
+            GD_bias<<<(net[l].size() + SAMPLES - 1) / SAMPLES, SAMPLES>>>(d_net.head, l, LR, pow_beta1_t, pow_beta2_t, beta1, beta2);
     }
-    GD_bias<<<(net[D + 1].size() + SAMPLES - 1) / SAMPLES, SAMPLES>>>(d_net.head, D + 1, LR / batch_size, pow_beta1_t, pow_beta2_t, beta1, beta2);
+    GD_bias<<<(net[D + 1].size() + SAMPLES - 1) / SAMPLES, SAMPLES>>>(d_net.head, D + 1, LR, pow_beta1_t, pow_beta2_t, beta1, beta2);
 
-    CC(cudaDeviceSynchronize());
     return cudaGetLastError();
 }
 
@@ -685,8 +681,6 @@ float get_loss(d_NN &d_net, NN &host_net, const int D, const int N, const float 
         CC(forward_propagate(d_net, host_net, D, d_data_in, data_size, order, order_size, batch_size));
         loss<<<dim3((batch_size + SAMPLES - 1) / SAMPLES, host_net[D + 1].size()), SAMPLES>>>(d_total_loss, d_net.head, D, d_data_out, data_size, order, order_size, batch_size);
         CC(cudaGetLastError());
-
-        CC(cudaDeviceSynchronize());
     }
 
     CC(cudaFreeHost(orders.first));
@@ -726,7 +720,7 @@ void train(d_NN &d_net, NN &net, const int &D, const int &N, const float *traini
 
         while (epochs--)
         {
-            if (epochs % 10 == 0)
+            if (epochs % 25 == 0)
             {
                 curr_loss = get_loss(d_net, net, D, N, d_training_in, d_training_out, training_size, batch_size);
                 if (curr_loss > 1.025f * last_loss)
@@ -742,7 +736,7 @@ void train(d_NN &d_net, NN &net, const int &D, const int &N, const float *traini
                 {
                     const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(curr_time - start).count();
                     const auto estimated_total_ms = elapsed_ms + (ms.count() * epochs) / (epochs_at_last_print - epochs);
-                    std::cout << "   Elapsed: " << elapsed_ms / 1000 << "s / " << estimated_total_ms / 1000 << "s;   \tEpochs remaining: " << epochs << ";\t\tLR: " << LR << ";   \tLoss: " << last_loss << "\n";
+                    std::cout << "   Elapsed: " << elapsed_ms / 1000 << "s / " << estimated_total_ms / 1000 << "s   |   Epochs remaining: " << epochs << "    |    LR: " << LR << "   |   Loss: " << last_loss << "\n";
                     last_time = curr_time;
                     epochs_at_last_print = epochs;
                 }
@@ -868,8 +862,7 @@ void analyzeInputFile(std::ifstream &inference_file, std::size_t &inference_size
 void read(const std::string &line, const std::size_t &line_size, float *v, const int &sample, const std::size_t &batch_size)
 {
     std::istringstream in(line);
-    for (int i = 0; i < line_size && in >> v[i * batch_size + sample]; i++)
-        ;
+    for (int i = 0; i < line_size && in >> v[i * batch_size + sample]; i++);
 }
 void get_training_data(std::ifstream &data_file, const int &data_size, float *&data_in, float *&data_out, const std::size_t &input_size, const std::size_t &output_size)
 {
@@ -988,7 +981,7 @@ int main(int argc, char **argv)
     cublasCreate(&handle);
 
     int D, N;
-    std::size_t input_size, output_size, batch_size = SAMPLES;
+    std::size_t input_size, output_size, batch_size = (std::size_t)-1;
     float part_testing = 0.2f, LR = -0.7734f;
 
     int whereToSave = 0, print = 5000;
@@ -1005,6 +998,8 @@ int main(int argc, char **argv)
     {
         analyzeDataFile(data_file, input_size, output_size, data_size);
         get_training_data(data_file, data_size, data_in, data_out, input_size, output_size);
+        if (batch_size == (std::size_t)-1)
+            batch_size = data_size * (1.0f - part_testing) / 4;
         if (!(batch_size > 0 && batch_size <= data_size * (1.0f - part_testing)))
             batch_size = data_size * (1.0f - part_testing);
     }
@@ -1043,7 +1038,7 @@ int main(int argc, char **argv)
     }
 
     if (LR == -0.7734f) // If uninitialized
-        LR = 0.5f / D;  // Both build_NN and load_network ensure that D>0
+        LR = 0.1f / D;  // Both build_NN and load_network ensure that D>0
 
     d_NN d_net;
     NN_to_device(d_net, net, D, batch_size);
