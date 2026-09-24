@@ -6,6 +6,7 @@
 *.tgz
 *.dmg
 *.app
+*.hpp
 
 # Ignore temporary files/folders used for testing:
 temp*
