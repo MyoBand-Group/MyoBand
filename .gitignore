@@ -6,7 +6,10 @@
 *.tgz
 *.dmg
 *.app
+
+*.vscode*
 *.hpp
+*.json
 
 # Ignore temporary files/folders used for testing:
 temp*
