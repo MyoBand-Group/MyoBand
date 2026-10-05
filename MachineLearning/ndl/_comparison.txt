@@ -1,0 +1,232 @@
+Conclusion of the tests:
+
+ Algorithgm:     scalar        SIMD          SIMT         matmul
+ Training Time:  2673s   vs    294s    vs    107s    vs    12s
+ Training Loss:    -     vs   2.1e-3   vs   8.0e-3   vs   1.3e-5
+ Testing Loss:     -     vs   2.8e-2   vs   2.3e-2   vs   3.7e-2
+
+Notes:
+ I interupted the scalar algorithm, as it was too slow - the given time is an estimation.
+ The scalar algorithm had a batch size of 1 (SGD), whereas SIMD: 32, SIMT: 500, matmul: 2000.
+ Only the matmul algorithm had an optimizer - Adam optimizer.
+
+
+
+
+
+Tests:
+
+Microsoft Windows [Version 10.0.19045.7725]
+(c) Microsoft Corporation. All rights reserved.
+
+C:\Users\niki\Desktop\Project\Scripts\MachineLearning\ndl>mkdir tempCompare
+
+C:\Users\niki\Desktop\Project\Scripts\MachineLearning\ndl>python generateData.py 10000 tempCompare\dataset.txt
+Generated 10000 points in tempCompare\dataset.txt.
+Average of output1: -0.6038
+Average of output2: 0.0148
+
+C:\Users\niki\Desktop\Project\Scripts\MachineLearning\ndl>g++ SIMD-trainNN.cpp -o tempCompare\SIMD -O2 -march=native
+
+C:\Users\niki\Desktop\Project\Scripts\MachineLearning\ndl>g++ scalar-trainNN.cpp -o tempCompare\scalar -O2 -march=native
+
+C:\Users\niki\Desktop\Project\Scripts\MachineLearning\ndl>nvcc matmul-trainNN.cu -o tempCompare\matmul.exe -lcublas -O3 -arch=sm_75
+matmul-trainNN.cu
+tmpxft_00000658_00000000-10_matmul-trainNN.cudafe1.cpp
+
+C:\Users\niki\Desktop\Project\Scripts\MachineLearning\ndl>nvcc SIMT-trainNN.cu -o tempCompare\SIMT.exe -O3 -arch=sm_75
+SIMT-trainNN.cu
+tmpxft_000039f4_00000000-10_SIMT-trainNN.cudafe1.cpp
+
+C:\Users\niki\Desktop\Project\Scripts\MachineLearning\ndl>cd tempCompare
+
+C:\Users\niki\Desktop\Project\Scripts\MachineLearning\ndl\tempCompare>scalar.exe -d dataset.txt
+
+
+
+Creating neural network... Define its size <depth N> <layer width M>: 3 64
+
+
+Splitting data...
+ Testing set: 2000 / 10000 (20%)
+ Training set: 25x320 / 10000 (80%)
+
+
+Training neural network on 8000 data points. Initial loss: 2.07036e+00
+How many epochs to train the NN for: 10000
+   Elapsed: 5s / 2551s   |   Epochs remaining: 9980    |    LR: 1.66667e-01   |   Loss: 1.63890e+00
+   Elapsed: 10s / 2669s   |   Epochs remaining: 9960    |    LR: 1.66667e-01   |   Loss: 1.63895e+00
+   Elapsed: 15s / 2671s   |   Epochs remaining: 9940    |    LR: 1.66667e-01   |   Loss: 1.63896e+00
+   Elapsed: 21s / 2674s   |   Epochs remaining: 9920    |    LR: 1.66667e-01   |   Loss: 1.63889e+00
+   Elapsed: 26s / 2673s   |   Epochs remaining: 9900    |    LR: 1.66667e-01   |   Loss: 1.63877e+00
+^C
+C:\Users\niki\Desktop\Project\Scripts\MachineLearning\ndl\tempCompare>SIMD.exe -d dataset.txt
+
+
+
+Creating neural network... Define its size <depth N> <layer width M>: 3 64
+
+Splitting data...
+ Testing set: 2000 / 10000 (20%)
+ Training set: 250x32 / 10000 (80%)
+
+
+Training neural network on 8000 data points. Initial loss: 1.8605e+00
+
+How many epochs to train the NN for: 10000
+   Elapsed: 5s / 292s   |   Epochs remaining: 9829    |    LR: 1.1992e-01   |   Loss: 1.0002e-01
+   Elapsed: 10s / 294s   |   Epochs remaining: 9659    |    LR: 7.9980e-02   |   Loss: 2.5105e-02
+   Elapsed: 15s / 293s   |   Epochs remaining: 9488    |    LR: 5.6111e-02   |   Loss: 1.6194e-02
+   Elapsed: 20s / 295s   |   Epochs remaining: 9318    |    LR: 3.9365e-02   |   Loss: 1.1889e-02
+   Elapsed: 25s / 294s   |   Epochs remaining: 9148    |    LR: 2.3132e-02   |   Loss: 1.3983e-02
+   Elapsed: 30s / 294s   |   Epochs remaining: 8978    |    LR: 1.6644e-02   |   Loss: 4.1408e-03
+   Elapsed: 35s / 294s   |   Epochs remaining: 8808    |    LR: 1.2284e-02   |   Loss: 5.5427e-03
+   Elapsed: 40s / 294s   |   Epochs remaining: 8638    |    LR: 1.0289e-02   |   Loss: 3.5347e-03
+   Elapsed: 45s / 295s   |   Epochs remaining: 8469    |    LR: 8.1922e-03   |   Loss: 4.2314e-03
+   Elapsed: 50s / 294s   |   Epochs remaining: 8299    |    LR: 6.3598e-03   |   Loss: 3.4341e-03
+   Elapsed: 55s / 295s   |   Epochs remaining: 8129    |    LR: 5.6036e-03   |   Loss: 3.2253e-03
+   Elapsed: 60s / 293s   |   Epochs remaining: 7958    |    LR: 5.4635e-03   |   Loss: 3.1560e-03
+   Elapsed: 65s / 293s   |   Epochs remaining: 7787    |    LR: 5.4635e-03   |   Loss: 3.0982e-03
+   Elapsed: 70s / 293s   |   Epochs remaining: 7616    |    LR: 5.4635e-03   |   Loss: 3.0431e-03
+   Elapsed: 75s / 294s   |   Epochs remaining: 7446    |    LR: 5.4635e-03   |   Loss: 2.9999e-03
+   Elapsed: 80s / 293s   |   Epochs remaining: 7275    |    LR: 5.4635e-03   |   Loss: 2.9577e-03
+   Elapsed: 85s / 293s   |   Epochs remaining: 7104    |    LR: 5.4635e-03   |   Loss: 2.9225e-03
+   Elapsed: 90s / 293s   |   Epochs remaining: 6933    |    LR: 5.4635e-03   |   Loss: 2.8801e-03
+   Elapsed: 95s / 293s   |   Epochs remaining: 6762    |    LR: 5.4635e-03   |   Loss: 2.8440e-03
+   Elapsed: 100s / 294s   |   Epochs remaining: 6592    |    LR: 5.4635e-03   |   Loss: 2.8117e-03
+   Elapsed: 105s / 294s   |   Epochs remaining: 6422    |    LR: 5.4635e-03   |   Loss: 2.7785e-03
+   Elapsed: 110s / 293s   |   Epochs remaining: 6251    |    LR: 5.4635e-03   |   Loss: 2.7479e-03
+   Elapsed: 115s / 294s   |   Epochs remaining: 6081    |    LR: 5.4635e-03   |   Loss: 2.7166e-03
+   Elapsed: 120s / 294s   |   Epochs remaining: 5910    |    LR: 5.4635e-03   |   Loss: 2.6877e-03
+   Elapsed: 125s / 293s   |   Epochs remaining: 5739    |    LR: 5.4635e-03   |   Loss: 2.6610e-03
+   Elapsed: 130s / 293s   |   Epochs remaining: 5568    |    LR: 5.4635e-03   |   Loss: 2.6340e-03
+   Elapsed: 135s / 293s   |   Epochs remaining: 5397    |    LR: 5.4635e-03   |   Loss: 2.6094e-03
+   Elapsed: 140s / 293s   |   Epochs remaining: 5226    |    LR: 5.4635e-03   |   Loss: 2.5861e-03
+   Elapsed: 145s / 294s   |   Epochs remaining: 5056    |    LR: 5.4635e-03   |   Loss: 2.5606e-03
+   Elapsed: 150s / 294s   |   Epochs remaining: 4886    |    LR: 5.4635e-03   |   Loss: 2.5381e-03
+   Elapsed: 155s / 294s   |   Epochs remaining: 4716    |    LR: 5.4635e-03   |   Loss: 2.5163e-03
+   Elapsed: 160s / 294s   |   Epochs remaining: 4546    |    LR: 5.4635e-03   |   Loss: 2.4952e-03
+   Elapsed: 165s / 294s   |   Epochs remaining: 4376    |    LR: 5.4635e-03   |   Loss: 2.4747e-03
+   Elapsed: 170s / 294s   |   Epochs remaining: 4206    |    LR: 5.4635e-03   |   Loss: 2.4557e-03
+   Elapsed: 175s / 293s   |   Epochs remaining: 4035    |    LR: 5.4635e-03   |   Loss: 2.4371e-03
+   Elapsed: 180s / 293s   |   Epochs remaining: 3864    |    LR: 5.4635e-03   |   Loss: 2.4162e-03
+   Elapsed: 185s / 294s   |   Epochs remaining: 3694    |    LR: 5.4635e-03   |   Loss: 2.3980e-03
+   Elapsed: 190s / 294s   |   Epochs remaining: 3524    |    LR: 5.4635e-03   |   Loss: 2.3804e-03
+   Elapsed: 195s / 293s   |   Epochs remaining: 3353    |    LR: 5.4635e-03   |   Loss: 2.3637e-03
+   Elapsed: 200s / 294s   |   Epochs remaining: 3183    |    LR: 5.4635e-03   |   Loss: 2.3465e-03
+   Elapsed: 205s / 293s   |   Epochs remaining: 3012    |    LR: 5.4635e-03   |   Loss: 2.3308e-03
+   Elapsed: 210s / 293s   |   Epochs remaining: 2841    |    LR: 5.4635e-03   |   Loss: 2.3147e-03
+   Elapsed: 215s / 294s   |   Epochs remaining: 2671    |    LR: 5.4635e-03   |   Loss: 2.2998e-03
+   Elapsed: 220s / 295s   |   Epochs remaining: 2504    |    LR: 5.4635e-03   |   Loss: 2.2845e-03
+   Elapsed: 225s / 295s   |   Epochs remaining: 2335    |    LR: 5.4635e-03   |   Loss: 2.2697e-03
+   Elapsed: 230s / 294s   |   Epochs remaining: 2166    |    LR: 5.4635e-03   |   Loss: 2.2562e-03
+   Elapsed: 235s / 294s   |   Epochs remaining: 1996    |    LR: 5.4635e-03   |   Loss: 2.2420e-03
+   Elapsed: 240s / 294s   |   Epochs remaining: 1826    |    LR: 5.4635e-03   |   Loss: 2.2291e-03
+   Elapsed: 245s / 294s   |   Epochs remaining: 1656    |    LR: 5.4635e-03   |   Loss: 2.2159e-03
+   Elapsed: 250s / 294s   |   Epochs remaining: 1485    |    LR: 5.4635e-03   |   Loss: 2.2021e-03
+   Elapsed: 255s / 294s   |   Epochs remaining: 1314    |    LR: 5.4635e-03   |   Loss: 2.1894e-03
+   Elapsed: 260s / 294s   |   Epochs remaining: 1143    |    LR: 5.4635e-03   |   Loss: 2.1773e-03
+   Elapsed: 265s / 294s   |   Epochs remaining: 972    |    LR: 5.4635e-03   |   Loss: 2.1652e-03
+   Elapsed: 270s / 294s   |   Epochs remaining: 801    |    LR: 5.4635e-03   |   Loss: 2.1535e-03
+   Elapsed: 275s / 294s   |   Epochs remaining: 632    |    LR: 5.4635e-03   |   Loss: 2.1421e-03
+   Elapsed: 280s / 294s   |   Epochs remaining: 462    |    LR: 5.4635e-03   |   Loss: 2.1311e-03
+   Elapsed: 285s / 294s   |   Epochs remaining: 291    |    LR: 5.4635e-03   |   Loss: 2.1198e-03
+   Elapsed: 290s / 294s   |   Epochs remaining: 121    |    LR: 5.4635e-03   |   Loss: 2.1094e-03
+Training complete. Elapsed time: 294s; Loss: 2.1012e-03
+
+How many epochs to train the NN for: 0
+
+Training Complete!
+Loss on testing dataset: 2.8008e-02
+
+No input file specified. Skipping inference.
+
+
+Saving NN to file...
+
+Program Time: 298s
+
+
+
+C:\Users\niki\Desktop\Project\Scripts\MachineLearning\ndl\tempCompare>SIMT.exe -d dataset.txt
+
+
+
+Creating neural network... Define its size <depth D> <layer width N>: 3 64
+
+Splitting data...
+ Testing set: 2000 / 10000 (20%)
+ Training set: 16x500 / 10000 (80%)
+
+
+Training neural network on 8000 data points. Initial loss: 1.8995e+00
+
+How many epochs to train the NN for (0 to stop): 10000
+   Elapsed: 5s / 106s   |   Epochs remaining: 9531    |    LR: 1.1400e-01   |   Loss: 5.8212e-02
+   Elapsed: 10s / 106s   |   Epochs remaining: 9063    |    LR: 6.5316e-02   |   Loss: 2.4016e-02
+   Elapsed: 15s / 106s   |   Epochs remaining: 8595    |    LR: 3.9365e-02   |   Loss: 1.6638e-02
+   Elapsed: 20s / 106s   |   Epochs remaining: 8127    |    LR: 2.5597e-02   |   Loss: 1.4606e-02
+   Elapsed: 25s / 107s   |   Epochs remaining: 7661    |    LR: 1.9375e-02   |   Loss: 1.2707e-02
+   Elapsed: 30s / 107s   |   Epochs remaining: 7197    |    LR: 1.5823e-02   |   Loss: 1.2323e-02
+   Elapsed: 35s / 107s   |   Epochs remaining: 6732    |    LR: 1.4665e-02   |   Loss: 1.1475e-02
+   Elapsed: 40s / 107s   |   Epochs remaining: 6268    |    LR: 1.3593e-02   |   Loss: 1.1040e-02
+   Elapsed: 45s / 107s   |   Epochs remaining: 5804    |    LR: 1.2284e-02   |   Loss: 1.1013e-02
+   Elapsed: 50s / 107s   |   Epochs remaining: 5340    |    LR: 1.1977e-02   |   Loss: 1.0330e-02
+   Elapsed: 55s / 107s   |   Epochs remaining: 4875    |    LR: 1.1977e-02   |   Loss: 1.0262e-02
+   Elapsed: 60s / 107s   |   Epochs remaining: 4411    |    LR: 1.1977e-02   |   Loss: 9.7093e-03
+   Elapsed: 65s / 107s   |   Epochs remaining: 3948    |    LR: 1.1677e-02   |   Loss: 9.4786e-03
+   Elapsed: 70s / 107s   |   Epochs remaining: 3484    |    LR: 1.1677e-02   |   Loss: 9.2215e-03
+   Elapsed: 75s / 107s   |   Epochs remaining: 3020    |    LR: 1.1101e-02   |   Loss: 9.1734e-03
+   Elapsed: 80s / 107s   |   Epochs remaining: 2560    |    LR: 1.0823e-02   |   Loss: 8.9323e-03
+   Elapsed: 85s / 107s   |   Epochs remaining: 2100    |    LR: 1.0823e-02   |   Loss: 8.6188e-03
+   Elapsed: 90s / 107s   |   Epochs remaining: 1640    |    LR: 1.0552e-02   |   Loss: 8.4462e-03
+   Elapsed: 95s / 107s   |   Epochs remaining: 1180    |    LR: 1.0289e-02   |   Loss: 8.3127e-03
+   Elapsed: 100s / 107s   |   Epochs remaining: 720    |    LR: 9.5361e-03   |   Loss: 8.1813e-03
+   Elapsed: 105s / 107s   |   Epochs remaining: 260    |    LR: 9.5361e-03   |   Loss: 8.0481e-03
+Training complete. Elapsed time: 107s; Loss: 7.9946e-03
+
+How many epochs to train the NN for (0 to stop): 0
+
+Training Complete!
+Loss on testing dataset: 2.2845e-02
+
+No input file specified. Skipping inference.
+
+
+Saving NN to file...
+
+Program Time: 110s
+
+
+
+C:\Users\niki\Desktop\Project\Scripts\MachineLearning\ndl\tempCompare>matmul.exe -d dataset.txt
+
+
+
+Creating neural network... Define its size <depth D> <layer width N>: 3 64
+
+Splitting data...
+ Testing set: 2000 / 10000 (20%)
+ Training set: 4x2000 / 10000 (80%)
+
+
+Training neural network on 8000 data points. Initial loss: 2.1178e+00
+
+How many epochs to train the NN for (0 to stop): 10000
+   Elapsed: 5s / 12s   |   Epochs remaining: 5905    |    LR: 7.4843e-03   |   Loss: 8.7765e-03
+   Elapsed: 10s / 12s   |   Epochs remaining: 1798    |    LR: 2.8597e-03   |   Loss: 2.3660e-04
+Training complete. Elapsed time: 12s; Loss: 1.2653e-05
+
+How many epochs to train the NN for (0 to stop): 0
+
+
+Training Complete!
+Loss on testing dataset: 3.7488e-02
+
+
+No input file specified. Skipping inference.
+
+
+Saving NN to file...
+
+Program Time: 12s

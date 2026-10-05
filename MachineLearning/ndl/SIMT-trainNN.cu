@@ -1,6 +1,6 @@
 /*  Author: Nikola D. Lilov, 02 Sep 2026
  *
- *  Desc: Trains a simple NxM neural network with decreasing LR, a squared
+ *  Desc: Trains a simple NxM neural network with a decaying LR, a squared
  *  loss function and the x/1+abs(x) activation function. Instead of propagating
  *  one training example at a time, the GPU is fed `parallel_samples` at once.
  *  Requires a training dataset file with alternating input and output
